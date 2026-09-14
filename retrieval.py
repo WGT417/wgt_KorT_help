@@ -19,13 +19,15 @@ def compound_keys():
     except Exception:pass
     return keys
 
+# Only unambiguous particles; never mutilate lexical endings such as 피동, 쓰기, 시가, 화자, 의미 or 소설가.
+PARTICLE_RE=re.compile(r'(에대해서|에관해서|에서는|인가요|인가|에게|에서|으로|이란|이랑|에는|에도|은|는|을|를|의|과|와|에)$')
+def strip_particle(token):return PARTICLE_RE.sub('',token) if len(token)>2 else token
+
 def terms(query):
     result=[]
     for token in re.findall(r'[가-힣A-Za-z0-9]+',query.lower()):
         if token in STOP: continue
-        # Only remove unambiguous particles; never mutilate lexical endings
-        # such as 피동, 쓰기, 시가, 화자, 의미 or 소설가.
-        token=re.sub(r'(에대해서|에관해서|에서는|인가요|인가|에게|에서|으로|이란|이랑|에는|에도|은|는|을|를|의|과|와|에)$','',token) if len(token)>2 else token
+        token=strip_particle(token)
         if len(token)>=2 and token not in STOP: result.append(token)
     return list(dict.fromkeys(result))[:12]
 

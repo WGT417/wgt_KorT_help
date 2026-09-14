@@ -64,29 +64,52 @@ function conceptSourceButton(source){
     else{button.disabled=true;button.title='이 서재에서 해당 책을 찾지 못했습니다.';}
     return button;
 }
-function exampleList(title,items,kind){
-    if(!items?.length)return null;
-    const section=el('section',undefined,'concept-examples '+kind);section.append(el('h5',title));
-    for(const item of items){const article=el('article');article.append(el('strong',item.case),el('span',item.verdict,'verdict'),el('p',item.why));if(item.source)article.append(el('small','출처 · '+item.source));section.append(article);}
-    return section;
+function inlineText(text){
+    // Authored markup is limited to **emphasis** and `ending`; everything else is literal text.
+    const frag=document.createDocumentFragment();const re=/\*\*([^*]+)\*\*|`([^`]+)`/g;let last=0,m;
+    while((m=re.exec(text))){if(m.index>last)frag.append(document.createTextNode(text.slice(last,m.index)));frag.append(m[1]!==undefined?el('strong',m[1]):el('code',m[2],'ending'));last=re.lastIndex;}
+    if(last<text.length)frag.append(document.createTextNode(text.slice(last)));return frag;
+}
+function refChips(refs,sources){
+    const row=el('span',undefined,'inline-citations concept-refs');
+    for(const i of refs||[]){const s=sources[i];if(s)row.append(conceptSourceButton(s));}
+    return row;
+}
+function conceptItem(item,sources){
+    const li=el('li');
+    if(typeof item==='string'){li.append(inlineText(item));return li;}
+    const p=el('p');
+    if(item.label)p.append(el('strong',item.label+(item.text?': ':'')));
+    if(item.text)p.append(inlineText(item.text));
+    if(item.refs?.length)p.append(' ',refChips(item.refs,sources));
+    li.append(p);
+    if(item.sub?.length){const ul=el('ul',undefined,'concept-sub');for(const s of item.sub)ul.append(conceptItem(s,sources));li.append(ul);}
+    if(item.examples?.length){const ul=el('ul',undefined,'concept-usage');for(const e of item.examples){const x=el('li');x.append(inlineText(e));ul.append(x);}li.append(ul);}
+    return li;
 }
 function renderConcept(entry){
-    // Fixed, pre-written content. Nothing here is generated at query time.
+    // Fixed, pre-written content laid out as one document. Nothing here is generated at query time.
     const card=el('article',undefined,'concept-card');
     const head=el('div',undefined,'concept-head');head.append(el('span',entry.area,'badge'),el('span',entry.parent||'','concept-parent'),el('h3',entry.label));
     const status=entry.review?.status==='reviewed'?'검수 완료':'초안 · 검수 전';head.append(el('span',status,'badge concept-status'));
     card.append(head);
     if(entry.review?.audience_note&&entry.review.status!=='reviewed')card.append(el('p',entry.review.audience_note,'small muted'));
-    const tabs=[];
-    if(entry.summary||entry.explanation?.length)tabs.push(['설명',()=>{const s=el('section');if(entry.summary)s.append(el('p',entry.summary,'concept-lead'));for(const p of entry.explanation||[])s.append(el('p',p));return s;}]);
-    if(entry.steps?.length)tabs.push(['판단 절차',()=>{const s=el('section');s.append(el('p','자료에 아래 순서를 적용합니다.','small muted'));const ol=el('ol',undefined,'concept-steps');for(const step of entry.steps)ol.append(el('li',step));s.append(ol);return s;}]);
-    if(entry.examples?.length||entry.counter_examples?.length)tabs.push(['예와 반례',()=>{const s=el('section');const a=exampleList('이렇게 판단합니다',entry.examples,'example');const b=exampleList('여기서 갈립니다',entry.counter_examples,'counter');if(a)s.append(a);if(b)s.append(b);if(entry.review?.examples_note)s.append(el('p',entry.review.examples_note,'small muted'));return s;}]);
-    if(entry.common_errors?.length||entry.confused_with?.length)tabs.push(['자주 하는 오판',()=>{const s=el('section');if(entry.common_errors?.length){const ul=el('ul',undefined,'concept-errors');for(const e of entry.common_errors)ul.append(el('li',e));s.append(ul);}if(entry.confused_with?.length)s.append(el('p','헷갈리기 쉬운 개념: '+entry.confused_with.map(id=>conceptLabels.get(id)||id).join(' · '),'small muted'));return s;}]);
-    if(entry.sources?.length)tabs.push(['개론서 근거',()=>{const s=el('section');s.append(el('p','이 정리가 기대는 쪽입니다. 누르면 해당 쪽 본문을 엽니다.','small muted'));const row=el('div',undefined,'inline-citations');for(const src of entry.sources)row.append(conceptSourceButton(src));s.append(row);const pending=entry.sources.filter(x=>x.status!=='verified').length;if(pending)s.append(el('p',`${pending}곳은 용어 일치로 찾은 후보 쪽이며 본문 대조 전입니다.`,'small muted'));return s;}]);
-    const bar=el('div',undefined,'concept-tabs');bar.setAttribute('role','tablist');const body=el('div',undefined,'concept-body');
-    tabs.forEach(([label,build],i)=>{const b=el('button',label);b.type='button';b.setAttribute('role','tab');b.setAttribute('aria-selected',String(i===0));b.onclick=()=>{bar.querySelectorAll('button').forEach(x=>x.setAttribute('aria-selected','false'));b.setAttribute('aria-selected','true');body.replaceChildren(build());};bar.append(b);});
-    if(tabs.length)body.append(tabs[0][1]());
-    card.append(bar,body);return card;
+    const body=el('div',undefined,'concept-body concept-doc');const sources=entry.sources||[];
+    if(entry.summary)body.append(el('p',entry.summary,'concept-lead'));
+    if(entry.sections?.length){
+        entry.sections.forEach((section,i)=>{
+            body.append(el('h4',`${i+1}. ${section.heading}`));
+            if(section.intro)body.append(el('p',section.intro,'concept-intro'));
+            const ul=el('ul',undefined,'concept-items');for(const item of section.items||[])ul.append(conceptItem(item,sources));body.append(ul);
+        });
+    }else for(const p of entry.explanation||[])body.append(el('p',p));
+    if(sources.length){
+        const foot=el('div',undefined,'concept-sources');foot.append(el('p','개론서 근거 · 누르면 해당 쪽 본문을 엽니다.','small muted'));
+        const row=el('div',undefined,'inline-citations');for(const src of sources)row.append(conceptSourceButton(src));foot.append(row);
+        const pending=sources.filter(x=>x.status!=='verified').length;if(pending)foot.append(el('p',`${pending}곳은 용어 일치로 찾은 후보 쪽이며 본문 대조 전입니다.`,'small muted'));
+        body.append(foot);
+    }
+    card.append(body);return card;
 }
 const conceptLabels=new Map();
 function renderConcepts(concepts){

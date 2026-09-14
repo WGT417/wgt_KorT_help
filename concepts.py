@@ -18,6 +18,20 @@ TOO_COMMON={'문법','문학','독서','작문','화법','읽기','쓰기','말�
 
 def compact(text):return re.sub(r'\s+','',text or '').lower()
 
+def section_items(items):
+    """Flatten the nested items of a document-style section into plain strings."""
+    out=[]
+    for item in items or []:
+        if isinstance(item,str):out.append(item);continue
+        out+=[item.get('label',''),item.get('text','')]+list(item.get('examples',[]))+section_items(item.get('sub',[]))
+    return out
+
+def entry_text(entry):
+    """All prose of an entry: summary, document sections, and legacy paragraphs."""
+    parts=[entry.get('summary','')]+list(entry.get('explanation',[]))
+    for s in entry.get('sections',[]):parts+=[s.get('heading',''),s.get('intro','')]+section_items(s.get('items',[]))
+    return ' '.join(p for p in parts if p)
+
 def _load():
     files=sorted(CONCEPT_DIR.glob('*.json')) if CONCEPT_DIR.exists() else []
     stamp=tuple((f.name,f.stat().st_mtime_ns) for f in files)
@@ -37,13 +51,19 @@ def _load():
 def all_concepts():return _load()
 
 def query_terms(query):
-    """Whole words of the question (particles stripped) plus adjacent pairs,
-    so '재귀 대명사' and '재귀대명사' both yield the term 재귀대명사."""
-    from retrieval import terms
+    """Whole words of the question plus adjacent pairs and triples, so '재귀 대명사'
+    and '재귀대명사' both yield 재귀대명사. A particle is stripped only from the
+    last word of a phrase: '대등적으로 이어진 문장과' must still yield
+    대등적으로이어진문장, where 으로 is part of the name, not a particle."""
+    from retrieval import terms,strip_particle
+    raw=[compact(t) for t in re.findall(r'[가-힣A-Za-z0-9]+',query.lower())]
+    out=[]
+    for n in (3,2,1):
+        for i in range(len(raw)-n+1):
+            words=raw[i:i+n];out+=[''.join(words),''.join(words[:-1])+strip_particle(words[-1])]
     words=[compact(t) for t in terms(query)]
-    pairs=[a+b for a,b in zip(words,words[1:])]
-    triples=[a+b+c for a,b,c in zip(words,words[1:],words[2:])]
-    return [t for t in dict.fromkeys(triples+pairs+words) if len(t)>=2]
+    out+=[a+b+c for a,b,c in zip(words,words[1:],words[2:])]+[a+b for a,b in zip(words,words[1:])]+words
+    return [t for t in dict.fromkeys(out) if len(t)>=2]
 
 def match_concepts(query,category='전체',limit=3):
     """Exact: a term of the question IS one of the entry's names. Related: an
@@ -58,7 +78,7 @@ def match_concepts(query,category='전체',limit=3):
         if exact:hits.append(('exact',max(len(t) for t in exact),entry));continue
         partial=[t for t in names if any(t in qt and t!=qt for qt in qterms) or (t in q and not qterms)]
         if partial:
-            body=compact(' '.join([entry.get('summary','')]+list(entry.get('explanation',[]))))
+            body=compact(entry_text(entry))
             # A concept whose text never uses the matched word cannot explain it.
             if any(t in body for t in partial):hits.append(('related',max(len(t) for t in partial),entry))
     # '재귀 대명사' names one concept; the word 대명사 inside it must not also

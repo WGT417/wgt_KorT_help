@@ -40,23 +40,21 @@ table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-he
 .concept-head h3{margin:0;font-size:18px;flex:1 1 auto}
 .concept-parent{font-size:12px;color:var(--muted)}
 .concept-status{background:#eef3fa;color:#3b4d66}
-.concept-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 8px}
-.concept-tabs button{min-height:40px;padding:6px 14px;border-radius:999px;border:1px solid var(--line);background:#f5f8fc;font-size:13.5px;cursor:pointer}
-.concept-tabs button[aria-selected="true"]{background:var(--blue-dark,#2563b5);color:white;border-color:transparent}
-.concept-body{line-height:1.9;font-size:15.5px;word-break:keep-all;overflow-wrap:anywhere;max-width:900px}
+.concept-body{line-height:1.9;font-size:15.5px;word-break:keep-all;overflow-wrap:anywhere;max-width:900px;margin-top:6px}
 .concept-body p{margin:8px 0}
 .concept-lead{font-weight:650;color:#25364b}
-.concept-steps{padding-left:22px}
-.concept-steps li{margin:6px 0}
-.concept-errors{padding-left:22px}
-.concept-examples{margin:10px 0}
-.concept-examples h5{margin:8px 0 6px;font-size:14px;color:var(--blue-dark,#2563b5)}
-.concept-examples.counter h5{color:#8a4b1a}
-.concept-examples article{padding:10px 14px;border-radius:9px;background:#f7f9fc;margin:6px 0;font-size:14.5px}
-.concept-examples article strong{display:block}
-.concept-examples .verdict{display:inline-block;font-size:12.5px;color:#3b4d66;background:#e8eff9;border-radius:6px;padding:1px 8px;margin:4px 0}
-.concept-examples article p{margin:4px 0}
-.concept-examples small{color:var(--muted)}
+.concept-doc h4{font-size:17px;line-height:1.5;margin:24px 0 8px;color:#172c48}
+.concept-doc .concept-intro{margin:0 0 8px;color:#435269}
+.concept-items,.concept-sub,.concept-usage{margin:4px 0;padding-left:22px}
+.concept-items>li{margin:10px 0}.concept-sub>li,.concept-usage>li{margin:5px 0}
+.concept-items li p{margin:0}
+.concept-sub{list-style:circle}
+.concept-usage{list-style:none;padding-left:14px;color:#2f4258}
+.concept-usage>li::before{content:'“';color:#8a9bb0;margin-right:2px}.concept-usage>li::after{content:'”';color:#8a9bb0;margin-left:2px}
+.concept-doc code.ending{font-family:Consolas,"D2Coding","Nanum Gothic Coding",monospace;font-size:.93em;background:#eef2f7;color:#1f3b5c;border-radius:5px;padding:1px 5px;white-space:nowrap}
+.concept-refs{margin-left:2px}.concept-refs .citation-chip{min-height:22px;padding:2px 7px;font-size:10.5px;line-height:1.4}
+.concept-sources{margin-top:22px;padding-top:12px;border-top:1px solid var(--line)}
+.concept-sources .small{margin:0 0 6px}
 .source-full-text .suspect{color:#7a8797;text-decoration:underline dotted #b8c4d3;text-underline-offset:4px;cursor:help}
 .source-full-text .suspect::before{content:"오인식 의심 ";font-size:11px;color:#a55b2b;background:#fff4ec;border-radius:4px;padding:0 5px;margin-right:4px;text-decoration:none;display:inline-block}
 .term-card{border-left-color:#7a5a2b}
