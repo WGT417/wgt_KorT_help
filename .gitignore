@@ -1,0 +1,11 @@
+.runtime/
+.env
+.env.*
+!.env.example
+data/
+__pycache__/
+*.log
+개론서 파일/
+tmp/
+
+.env.tmp
