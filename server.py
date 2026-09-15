@@ -5,18 +5,33 @@ from urllib.error import HTTPError, URLError
 import os, json, re, threading, secrets, mimetypes, time, subprocess
 from core import ROOT, DATA, connect, init_db, search_pages, route_question, pymupdf, normalized, quality, ocr_page
 from explanation import collect_evidence, prompt_for, validate, ANSWER_SCHEMA,MODEL_ANSWER_SCHEMA,evidence_packet,resolve_evidence
+import quota
 
+# PUBLIC=1 is set in the Dockerfile: bind all interfaces, trust the platform's
+# routing instead of the localhost Host check, count AI usage in Firestore,
+# and refuse the local key-saving endpoint. Everything else stays the
+# desktop behaviour so start.cmd keeps working unchanged.
+PUBLIC=os.environ.get('PUBLIC','')=='1'
 PORT=int(os.environ.get('PORT','8765'))
-for line in (ROOT/'.env').read_text(encoding='utf-8').splitlines() if (ROOT/'.env').exists() else []:
-    if '=' in line and not line.lstrip().startswith('#'):
-        name,value=line.split('=',1)
-        if name.strip() == 'OPENAI_API_KEY':os.environ.setdefault(name.strip(),value.strip().strip('"').strip("'"))
+HOST=os.environ.get('HOST','0.0.0.0' if PUBLIC else '127.0.0.1')
+ADMIN_TOKEN=os.environ.get('ADMIN_TOKEN','')
+ALLOWED_HOSTS={h.strip() for h in os.environ.get('ALLOWED_HOSTS','').split(',') if h.strip()}
+if not PUBLIC:
+    for line in (ROOT/'.env').read_text(encoding='utf-8').splitlines() if (ROOT/'.env').exists() else []:
+        if '=' in line and not line.lstrip().startswith('#'):
+            name,value=line.split('=',1)
+            if name.strip() == 'OPENAI_API_KEY':os.environ.setdefault(name.strip(),value.strip().strip('"').strip("'"))
 API_KEY=os.environ.get('OPENAI_API_KEY','')
 MODEL='gpt-5.6-luna'
 CSRF=secrets.token_urlsafe(32)
 AI_LOCK=threading.Lock()
 OCR_LOCK=threading.Lock()
 init_db()
+QUOTA_BACKEND=os.environ.get('QUOTA_BACKEND','firestore' if PUBLIC else 'none')
+try:QUOTA=quota.make(QUOTA_BACKEND)
+except Exception as error:
+    # Fail closed: keep the site up for search, but never generate without counting.
+    print(f'quota backend unavailable ({QUOTA_BACKEND}): {error}',flush=True);QUOTA=None
 
 def save_api_key(key):
     path=ROOT/'.env'
@@ -72,7 +87,40 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type',kind)
         self.send_header('Content-Length',str(len(body)))
         self.headers_safe()
+        for cookie in getattr(self,'cookies',()):self.send_header('Set-Cookie',cookie)
         self.end_headers();self.wfile.write(body)
+    def is_admin(self):
+        return bool(ADMIN_TOKEN) and secrets.compare_digest(self.headers.get('X-Admin-Token',''),ADMIN_TOKEN)
+    def client_ip(self):
+        # Behind Firebase Hosting / Cloud Run the first X-Forwarded-For entry is the
+        # visitor. It is a soft signal (the per-IP bucket), never a security boundary.
+        forwarded=self.headers.get('X-Forwarded-For','') if PUBLIC else ''
+        return (forwarded.split(',')[0].strip() or self.client_address[0])[:64]
+    def visitor_id(self):
+        cookies=dict(part.strip().split('=',1) for part in self.headers.get('Cookie','').split(';') if '=' in part)
+        token=cookies.get('__session','')  # Firebase Hosting only forwards a cookie named __session
+        if not re.fullmatch(r'[A-Za-z0-9_\-]{16,64}',token):
+            token=secrets.token_urlsafe(24)
+            self.cookies=[f'__session={token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax'+('; Secure' if PUBLIC else '')]
+        return token
+    def quota_state(self,consume=False):
+        """Return the quota dict for the response; (allowed, state) when consuming."""
+        if self.is_admin():return (True,{'admin':True}) if consume else {'admin':True}
+        if QUOTA is None:return (False,{'unavailable':True}) if consume else {'unavailable':True}
+        if QUOTA.name=='none':return (True,{'unlimited':True}) if consume else {'unlimited':True}
+        day,visitor,ip=quota.today(),self.visitor_id(),self.client_ip()
+        try:
+            if consume:
+                ok,remaining=QUOTA.consume(day,visitor,ip)
+                return ok,{'limit':quota.LIMITS[0],'remaining':remaining}
+            return {'limit':quota.LIMITS[0],'remaining':QUOTA.peek(day,visitor,ip)}
+        except Exception as error:
+            print(f'quota error: {error}',flush=True)
+            return (False,{'unavailable':True}) if consume else {'unavailable':True}
+    def quota_refund(self):
+        if self.is_admin() or QUOTA is None:return
+        try:QUOTA.refund(quota.today(),self.visitor_id(),self.client_ip())
+        except Exception as error:print(f'quota refund error: {error}',flush=True)
     def headers_safe(self):
         self.send_header('Cache-Control','no-store')
         self.send_header('X-Content-Type-Options','nosniff')
@@ -80,7 +128,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Frame-Options','SAMEORIGIN')
         self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; object-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'")
     def host_ok(self):
+        if PUBLIC:return True  # Cloud Run / Firebase Hosting only route our own hostnames here
         return self.headers.get('Host') in {f'localhost:{PORT}',f'127.0.0.1:{PORT}'}
+    def origin_ok(self):
+        origin=self.headers.get('Origin','')
+        if not PUBLIC:return origin in {f'http://localhost:{PORT}',f'http://127.0.0.1:{PORT}'}
+        if self.headers.get('Sec-Fetch-Site')=='same-origin':return True
+        parts=urlsplit(origin)
+        if parts.scheme!='https' or not parts.netloc:return False
+        forwarded={h.strip() for h in self.headers.get('X-Forwarded-Host','').split(',') if h.strip()}
+        return parts.netloc in ({self.headers.get('Host','')}|forwarded|ALLOWED_HOSTS)
     def do_GET(self):
         if not self.host_ok():return self.send(403,{'error':'로컬 주소로 접속해 주세요.'})
         path=urlsplit(self.path).path
@@ -95,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
                     init_passages(db)
                     reading_pages=db.execute('SELECT COUNT(*) FROM text_build WHERE version=?',(VERSION,)).fetchone()[0]
                     passage_count=db.execute("SELECT COUNT(*) FROM passages WHERE kind='body'").fetchone()[0]
-                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists()})
+                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists(),'public':PUBLIC,'admin':self.is_admin(),'quota':self.quota_state()})
             match=re.fullmatch(r'/api/pages/(\d+)',path)
             if match:
                 with connect() as db:row=db.execute('SELECT p.*,b.title FROM pages p JOIN books b ON p.book_id=b.id WHERE p.id=?',(int(match[1]),)).fetchone()
@@ -113,12 +170,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:return self.send(500,{'error':'요청을 처리하지 못했습니다. 서버와 자료 상태를 확인해 주세요.'})
     def do_POST(self):
         global API_KEY
-        if not self.host_ok() or self.headers.get('Origin') not in {f'http://localhost:{PORT}',f'http://127.0.0.1:{PORT}'} or not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),CSRF):return self.send(403,{'error':'허용되지 않은 요청입니다.'})
+        if not self.host_ok() or not self.origin_ok() or not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),CSRF):return self.send(403,{'error':'허용되지 않은 요청입니다.','csrf_expired':True})
         try:
             length=int(self.headers.get('Content-Length','0'))
             if not 0<length<=16384:return self.send(413,{'error':'요청이 너무 큽니다.'})
             body=json.loads(self.rfile.read(length));path=urlsplit(self.path).path
             if path=='/api/key':
+                if PUBLIC:return self.send(404,{'error':'공개 서버에서는 키를 화면에서 설정하지 않습니다.'})
                 key=body.get('key','')
                 if not isinstance(key,str) or len(key)>512:return self.send(400,{'error':'키 형식을 확인해 주세요.'})
                 if key and (len(key)<20 or not re.fullmatch(r'[A-Za-z0-9_\-]+',key)):return self.send(400,{'error':'키 형식을 확인해 주세요.'})
@@ -139,22 +197,31 @@ class Handler(BaseHTTPRequestHandler):
                 covered={s['term'].replace(' ','').lower() for t in terms for s in t['sources']}|{t['key'] for t in terms}
                 for c in concepts:
                     if c['match']=='exact' and not c['by_label'] and any(c['matched_term'] in k for k in covered):c['match']='related'
-                result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms}
+                result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms,'quota':None}
                 if not sources:result['notice']='관련 근거를 찾지 못했습니다. 용어를 짧게 바꾸거나 검색 영역을 넓혀 주세요.'
                 elif use_ai and not API_KEY:result['notice']='해설이 필요한 질문입니다. OpenAI API 키를 연결하면 근거를 바탕으로 설명합니다. 지금은 찾은 원문을 보여드립니다.'
                 elif use_ai:
                     if not AI_LOCK.acquire(blocking=False):return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
                     try:
-                        sources=collect_evidence(query,category,sources,openai_call,API_KEY)
-                        result['sources']=sources
-                        result['answer']=reason(query,sources);result['ai_used']=True
-                    except ValueError as error:result['notice']=str(error)
+                        allowed,state=self.quota_state(consume=True);result['quota']=state
+                        if not allowed:
+                            result['notice']=('지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 중단했습니다. 원문 검색과 개념 정리는 계속 이용할 수 있습니다.' if state.get('unavailable')
+                                else f"오늘의 AI 해설 {quota.LIMITS[0]}회를 모두 사용했습니다. 자정 이후 다시 이용할 수 있으며, 원문 검색과 개념 정리는 계속 볼 수 있습니다.")
+                        else:
+                            try:
+                                sources=collect_evidence(query,category,sources,openai_call,API_KEY)
+                                result['sources']=sources
+                                result['answer']=reason(query,sources);result['ai_used']=True
+                            except ValueError as error:
+                                result['notice']=str(error);self.quota_refund()
+                                if 'remaining' in state:state['remaining']+=1
                     finally:AI_LOCK.release()
                 for source in sources:
                     source.pop('text',None);source.pop('evidence_text',None)
                 return self.send(200,result)
             match=re.fullmatch(r'/api/pages/(\d+)/(verify|ocr)',path)
             if match:
+                if PUBLIC and not self.is_admin():return self.send(403,{'error':'관리자만 사용할 수 있습니다.'})
                 with connect() as db:row=db.execute('SELECT p.*,b.path FROM pages p JOIN books b ON p.book_id=b.id WHERE p.id=?',(int(match[1]),)).fetchone()
                 if not row:return self.send(404,{'error':'페이지를 찾을 수 없습니다.'})
                 if match[2]=='verify':
@@ -181,5 +248,5 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:return self.send(500,{'error':'처리하지 못했습니다. 원문 검색은 계속 사용할 수 있습니다.'})
 
 if __name__=='__main__':
-    print(f'Local URL: http://localhost:{PORT}',flush=True)
-    ThreadingHTTPServer(('127.0.0.1',PORT),Handler).serve_forever()
+    print(f'{"Public" if PUBLIC else "Local"} server on {HOST}:{PORT} (quota: {QUOTA.name if QUOTA else "unavailable"})' if PUBLIC else f'Local URL: http://localhost:{PORT}',flush=True)
+    ThreadingHTTPServer((HOST,PORT),Handler).serve_forever()

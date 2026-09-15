@@ -1,0 +1,25 @@
+# Files NOT uploaded to Cloud Build / the container image.
+# Note: data/ is intentionally included (unlike .gitignore) because the
+# server reads library.sqlite3, the E5 model and page text from it.
+.git/
+.gitignore
+.gcloudignore
+.dockerignore
+.runtime/
+.env
+.env.*
+!.env.example
+__pycache__/
+**/__pycache__/
+*.pyc
+*.log
+tmp/
+work/
+tests/
+AUDIT_REPORT.md
+*.pdf
+개론서 파일/
+data/tmp*/
+data/*.png
+data/text/**/*.ocr.json
+node_modules/

@@ -185,3 +185,84 @@ class TermIndexTests(unittest.TestCase):
         self.assertEqual(match_terms('zxqv 없는 용어','문법'),[])
         # A word inside a longer term does not match the longer term's neighbours by substring.
         self.assertTrue(all(h['key']!='대명사' for h in match_terms('재귀대명사','문법')))
+
+class QuotaTests(unittest.TestCase):
+    def test_memory_quota_counts_and_refunds(self):
+        import quota
+        q=quota.MemoryQuota()
+        with patch.object(quota,'LIMITS',(3,15,300)):
+            self.assertEqual(q.peek('d','v','ip'),3)
+            results=[q.consume('d','v','ip') for _ in range(4)]
+            self.assertEqual([ok for ok,_ in results],[True,True,True,False])
+            self.assertEqual([left for _,left in results],[2,1,0,0])
+            q.refund('d','v','ip');self.assertEqual(q.peek('d','v','ip'),1)
+            # Another visitor on the same IP is limited by the IP bucket, not the visitor's.
+            self.assertTrue(q.consume('d','other','ip')[0])
+            # A new day starts fresh.
+            self.assertEqual(q.peek('e','v','ip'),3)
+    def test_ip_and_daily_buckets_cap_everyone(self):
+        import quota
+        q=quota.MemoryQuota()
+        with patch.object(quota,'LIMITS',(3,2,300)):
+            self.assertTrue(q.consume('d','a','ip')[0]);self.assertTrue(q.consume('d','b','ip')[0])
+            self.assertFalse(q.consume('d','c','ip')[0])
+        with patch.object(quota,'LIMITS',(3,15,1)):  # a fresh day so the daily bucket starts at zero
+            self.assertTrue(q.consume('e','x','ip1')[0]);self.assertFalse(q.consume('e','y','ip2')[0])
+
+class PublicModeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.http=server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
+        cls.old_port=server.PORT;server.PORT=cls.http.server_port
+        cls.thread=threading.Thread(target=cls.http.serve_forever,daemon=True);cls.thread.start()
+        cls.base=f'http://127.0.0.1:{server.PORT}'
+    @classmethod
+    def tearDownClass(cls):cls.http.shutdown();cls.http.server_close();server.PORT=cls.old_port
+    def setUp(self):
+        import quota
+        self.cookie=''
+        patches=[patch.object(server,'PUBLIC',True),patch.object(server,'ADMIN_TOKEN','test-admin-token'),patch.object(server,'QUOTA',quota.MemoryQuota()),
+                 patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key:s),patch.object(server,'reason',return_value={'title':'mock'}),
+                 patch.object(quota,'LIMITS',(3,15,300))]
+        for p in patches:p.start();self.addCleanup(p.stop)
+    def request(self,path,body=None,headers=None,keep_cookie=True):
+        h={'Origin':'https://kor-teacher.web.app','X-Forwarded-Host':'kor-teacher.web.app','X-CSRF-Token':server.CSRF,'Content-Type':'application/json'}
+        if self.cookie and keep_cookie:h['Cookie']=self.cookie
+        if headers:h.update(headers)
+        response=urlopen(Request(self.base+path,data=json.dumps(body).encode() if body is not None else None,headers=h),timeout=20)
+        set_cookie=response.headers.get('Set-Cookie')
+        if set_cookie and keep_cookie:self.cookie=set_cookie.split(';')[0]
+        return response
+    def ask(self,**headers):
+        with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'reason'},headers or None) as r:return json.load(r)
+    def test_visitor_gets_three_explanations_per_day_and_cookie(self):
+        with self.request('/api/status') as r:status=json.load(r)
+        self.assertTrue(status['public']);self.assertFalse(status['admin']);self.assertEqual(status['quota'],{'limit':3,'remaining':3})
+        self.assertTrue(self.cookie.startswith('__session='))
+        results=[self.ask() for _ in range(4)]
+        self.assertEqual([d['ai_used'] for d in results],[True,True,True,False])
+        self.assertEqual([d['quota']['remaining'] for d in results],[2,1,0,0])
+        self.assertIn('3회',results[3]['notice']);self.assertGreater(len(results[3]['sources']),0)
+    def test_admin_token_bypasses_quota(self):
+        for _ in range(4):data=self.ask(**{'X-Admin-Token':'test-admin-token'})
+        self.assertTrue(data['ai_used']);self.assertEqual(data['quota'],{'admin':True})
+        self.assertFalse(self.ask(**{'X-Admin-Token':'wrong'})['quota'].get('admin'))
+    def test_failed_generation_refunds_the_attempt(self):
+        with patch.object(server,'reason',side_effect=ValueError('OpenAI 실패')):data=self.ask()
+        self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('실패',data['notice'])
+    def test_quota_backend_down_refuses_generation(self):
+        with patch.object(server,'QUOTA',None):data=self.ask()
+        self.assertFalse(data['ai_used']);self.assertIn('중단',data['notice']);self.assertTrue(data['quota']['unavailable'])
+    def test_public_origin_rules(self):
+        body={'question':'문법','category':'문법','mode':'search'}
+        with self.request('/api/ask',body,{'Origin':'https://evil.example','Sec-Fetch-Site':'same-origin'}) as r:self.assertEqual(r.status,200)
+        for headers in [{'Origin':'https://evil.example'},{'Origin':'http://kor-teacher.web.app'},{'Origin':''}]:
+            with self.assertRaises(HTTPError) as e:self.request('/api/ask',body,headers)
+            self.assertEqual(e.exception.code,403)
+        with self.request('/api/ask',body,{'Origin':'https://svc-abc.a.run.app','X-Forwarded-Host':'','Host':'svc-abc.a.run.app'}) as r:self.assertEqual(r.status,200)
+    def test_key_endpoint_and_page_edits_are_locked(self):
+        with self.assertRaises(HTTPError) as e:self.request('/api/key',{'key':'not-a-real-secret-for-testing'})
+        self.assertEqual(e.exception.code,404)
+        with self.assertRaises(HTTPError) as e:self.request('/api/pages/1/verify',{'printed_page':3})
+        self.assertEqual(e.exception.code,403)
+        # The admin path is not exercised here: it would write into the real library database.

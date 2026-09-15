@@ -66,16 +66,21 @@ PDF는 자료 처리용으로만 보관합니다. 앱에는 PDF 링크·미리�
 
 앱 우측 상단의 **연결 설정**에 직접 입력합니다. 브라우저는 localhost 서버로만 키를 보내고 입력란을 즉시 비웁니다. 키는 이 컴퓨터의 .env 파일에 저장하며 다음 실행부터 자동 연결합니다. API 응답·URL·로그·브라우저 저장소·서비스워커 캐시에 넣지 않습니다. 연결 설정의 저장된 키 삭제 버튼으로 제거할 수 있습니다. 실제 API 사용 가능 여부는 첫 해설 요청에서 확인합니다.
 
-선택적으로 `.env.example`을 `.env`로 복사해 로컬 파일에 설정할 수도 있습니다. 이 방식은 디스크에 키가 남습니다. `.env`는 Git 제외 대상이고 웹 서버가 제공하지 않습니다. 공개 배포용 구성은 아니며 현재 상태를 인터넷에 직접 노출하지 마세요.
+선택적으로 `.env.example`을 `.env`로 복사해 로컬 파일에 설정할 수도 있습니다. 이 방식은 디스크에 키가 남습니다. `.env`는 Git 제외 대상이고 웹 서버가 제공하지 않습니다. 공개 서버에서는 이 파일을 읽지 않으며 화면의 키 입력도 비활성화됩니다(아래 공개 배포 참고).
 
 `.env`는 저장할 때 Windows에서 현재 사용자·SYSTEM·관리자만 접근하도록 ACL을 제한합니다. 키는 여전히 로컬 디스크와 실행 중인 서버 메모리에 존재하므로, 해당 계정이나 관리자 권한이 침해된 상황까지 방어하지는 못합니다.
 
-## 배포 보안
+## 공개 배포 (Firebase Hosting + Cloud Run + Firestore)
 
-- 현재 서버는 `127.0.0.1`에만 바인딩하고 `localhost` Host·Origin만 허용하므로, 그대로는 외부 방문자가 사용할 수 없습니다.
-- GitHub Pages 같은 정적 호스팅에는 Python 검색 서버와 자료가 올라가지 않으므로 검색과 AI 해설이 작동하지 않습니다.
-- 백엔드를 공개 호스팅하고 서버의 `OPENAI_API_KEY`를 설정하면, 방문자는 키 문자열을 보지 못해도 `/api/ask`를 통해 그 키의 크레딧을 사용할 수 있습니다. 현재는 사용자 로그인, 사용자별 할당량, 요청 속도 제한이 없으므로 공개 배포에 적합하지 않습니다.
-- 공개 배포 전에는 `/api/key`를 관리자 전용으로 분리하거나 제거하고, 인증·사용자별 속도 및 일일 사용량 제한·전체 비용 상한·감사 로그를 추가해야 합니다. 배포 키는 이 앱 전용 OpenAI 프로젝트에서 발급하고 호스팅 서비스의 비밀 저장소에만 넣어야 합니다.
+로컬 실행(`start.cmd`)과 공개 서버는 같은 코드이며, 환경변수 `PUBLIC=1`(Dockerfile이 설정)일 때만 공개 모드로 동작합니다.
+
+- **공개 모드의 차이**: 모든 주소에 바인딩하고 localhost Host 검사를 끕니다. POST는 `Sec-Fetch-Site: same-origin`이거나 Origin의 호스트가 요청의 Host·`X-Forwarded-Host`·`ALLOWED_HOSTS`(쉼표 구분) 중 하나와 같을 때만 허용합니다. `/api/key`는 404를 돌려주고 키는 환경변수 `OPENAI_API_KEY`에서만 읽습니다. `.env` 파일은 읽지 않습니다. 쪽수 대조·재OCR은 관리자 전용입니다.
+- **로그인 없음, 하루 3회**: AI 해설이 필요한 요청은 방문자 쿠키(`__session`, 1년. Firebase Hosting이 Cloud Run으로 넘겨 주는 유일한 쿠키 이름) 기준 하루 3회, IP 기준 15회, 서버 전체 300회까지 허용합니다(`DAILY_PER_VISITOR`·`DAILY_PER_IP`·`DAILY_TOTAL`로 조정). 한국 시각 자정에 초기화됩니다. 초과하면 해설 없이 원문 검색·개념 정리·찾아보기 결과만 돌려주고 안내문을 붙입니다. 해설 생성이 실패하면 횟수를 돌려줍니다. 쿠키 삭제나 IP 변경으로 개인 제한은 우회할 수 있으므로 전체 상한과 OpenAI 프로젝트의 월 예산 한도가 실제 방어선입니다.
+- **횟수 저장소**: `QUOTA_BACKEND`가 `firestore`(공개 모드 기본)면 Google Cloud Firestore에 `quota_visitor`·`quota_ip`·`quota_daily` 컬렉션으로 기록합니다. Cloud Run에서는 별도 키 파일 없이 기본 서비스 계정으로 접근합니다. 문서에는 `expires` 필드가 있어 Firestore TTL 정책을 걸면 자동 삭제됩니다. Firestore에 연결하지 못하면 해설을 거부하고 검색만 제공합니다(fail closed). `memory`는 프로세스 메모리에만 세는 시험용, `none`(로컬 기본)은 세지 않습니다.
+- **관리자**: 환경변수 `ADMIN_TOKEN`과 같은 값을 `X-Admin-Token` 헤더로 보내면 횟수 제한 없이 해설을 생성하고 쪽수 대조도 할 수 있습니다. 화면 우측 상단 **관리자** 단추에서 토큰을 입력하면 그 브라우저의 localStorage에만 저장합니다. 토큰이 틀리면 저장하지 않습니다.
+- **배포 단위**: `Dockerfile`로 이미지를 만들고 `data/`(발췌 DB 276MB, E5 모델 137MB, 쪽별 원문 53MB)를 이미지에 포함합니다. `개론서 파일/`, `.runtime/`, `.env`, `tests/`는 `.gcloudignore`·`.dockerignore`로 제외합니다. 개념 JSON도 서버가 읽으므로 개념을 고치면 Cloud Run을 다시 배포해야 합니다.
+- **명령**: `gcloud run deploy kor-teacher --source . --region asia-northeast3 --memory 2Gi --cpu 1 --max-instances 1 --timeout 600 --allow-unauthenticated --set-env-vars OPENAI_API_KEY=...,ADMIN_TOKEN=...`. Firebase Hosting은 `dist/`를 서비스하고 `/api/**`를 이 Cloud Run 서비스로 넘깁니다(`firebase.json`).
+- **남는 위험**: 방문자는 키 문자열을 볼 수 없지만 하루 3회 범위에서 키의 크레딧을 씁니다. 배포 키는 이 앱 전용 OpenAI 프로젝트에서 발급하고 예산 한도를 걸어 두세요. 감사 로그는 Cloud Run 로그의 오류 줄 외에는 남기지 않습니다.
 - `.env`, `data/`, `개론서 파일/`은 `.gitignore`에서 제외합니다. 새 저장소를 만든 뒤 첫 커밋 전 실제 스테이징 목록과 비밀 탐지 결과를 다시 확인해야 합니다.
 
 자동 테스트는 OpenAI 응답을 대체하여 검색 확장, 구조화된 설명·표, 인용 검사, 검색 시 API 미호출, 오류 처리를 검증합니다. 8766 고정 응답 화면은 폐기했습니다. 이전 주소는 실제 앱(8765)으로 이동하며 질문 API는 410을 반환합니다. `python scripts/verify_explanation.py --live`는 실제 질문·관련 원문을 기존 설정된 OpenAI API로 보내는 별도 검증입니다. 실제 해설 검증은 사용자가 허용한 대표 질문과 관련 발췌문에 한해 실행하며, `data/explanation-verification-*.json`에 질문별 결과를 저장합니다. 이 파일을 서버의 답변으로 재생하지 않습니다.
