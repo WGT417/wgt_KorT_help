@@ -12,7 +12,7 @@ gcloud CLI, logged in with `gcloud init`. Secrets are never written to disk here
 pass --openai-key / --admin-token only on the first deploy (or to rotate them);
 later deploys keep the environment variables of the previous revision.
 """
-import argparse, json, shutil, subprocess, sys
+import argparse, json, os, shutil, subprocess, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,12 +33,22 @@ def gcloud():
     exe = shutil.which('gcloud') or shutil.which('gcloud.cmd')
     if not exe:
         sys.exit('gcloud CLI를 찾을 수 없습니다. https://cloud.google.com/sdk/docs/install 에서 설치한 뒤 새 터미널에서 `gcloud init`을 실행하세요.')
-    return exe
+    if exe.lower().endswith(('.cmd', '.bat')):
+        # Windows: gcloud.cmd runs through cmd.exe, which treats | ( ) ^ in arguments
+        # (e.g. the rsync --exclude regex) as its own operators. Call the SDK's Python
+        # entry point directly instead, with the interpreter the SDK itself uses.
+        script = Path(exe).resolve().parent.parent / 'lib' / 'gcloud.py'
+        if script.exists():
+            return [os.environ.get('CLOUDSDK_PYTHON') or sys.executable, str(script)]
+    return [exe]
 
 
 def run(*args, capture=False, check=True):
-    command = [gcloud(), *args]
-    print('$', ' '.join(a if ' ' not in a else f'"{a}"' for a in command[1:]), flush=True)
+    command = [*gcloud(), *args]
+    shown = ['gcloud', *args]
+    if '--update-env-vars' in shown:  # never echo secrets
+        shown[shown.index('--update-env-vars') + 1] = '<secrets>'
+    print('$', ' '.join(a if ' ' not in a else f'"{a}"' for a in shown), flush=True)
     result = subprocess.run(command, cwd=ROOT, text=True, encoding='utf-8', capture_output=capture)
     if check and result.returncode:
         sys.exit(result.returncode)

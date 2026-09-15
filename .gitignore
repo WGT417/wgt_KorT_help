@@ -9,3 +9,4 @@ __pycache__/
 tmp/
 
 .env.tmp
+.firebase/
