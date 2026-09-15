@@ -139,16 +139,26 @@ def search(db,query,category,book_id,limit,groups):
     from local_semantics import ready,rerank
     semantic=ready()
     if semantic:scored=rerank(query,scored[:40])
-    selected=[];seen=set();books=set()
-    # A concept is often developed in another book at a lower lexical score.
-    # Keep the strict floor for the main ranking, but admit a clearly relevant
-    # passage when it is the first evidence from a book not yet represented.
-    core=scored[0]['score']-4 if semantic else scored[0]['score']*.66
-    wide=scored[0]['score']-25 if semantic else scored[0]['score']*.45
+    # Every candidate already contains all query terms inside one clean
+    # excerpt, so the floor only drops clearly weaker matches. Semantic scores
+    # sit within a narrow band (a few points across the whole list), so a
+    # tighter floor would hide most of the passages that mention the concept.
+    floor=scored[0]['score']-25 if semantic else scored[0]['score']*.45
+    candidates=[];seen=set()
     for r in scored:
-        if r['score']<core and (r['score']<wide or r['book_id'] in books):continue
-        if r['page_id'] in seen:continue
-        seen.add(r['page_id']);books.add(r['book_id'])
+        if r['score']<floor or r['page_id'] in seen:continue
+        seen.add(r['page_id']);candidates.append(r)
+    # A concept is often developed in another book at a lower lexical score:
+    # secure each book's best passage first, then fill with the rest by score.
+    first={}
+    for r in candidates:first.setdefault(r['book_id'],r)
+    picked=list(first.values())[:limit];chosen={r['page_id'] for r in picked}
+    for r in candidates:
+        if len(picked)>=limit:break
+        if r['page_id'] not in chosen:picked.append(r);chosen.add(r['page_id'])
+    picked.sort(key=lambda r:-r['score'])
+    selected=[]
+    for r in picked:
         text,blocks,reading=layout_source(db,r['page_id'])
         result={k:r[k] for k in ['book_id','pdf_page','printed_page','number_status','method','quality','title','category']}
         # Tables that name the concept, or that directly follow the matched paragraph.
@@ -156,5 +166,4 @@ def search(db,query,category,book_id,limit,groups):
         shown,fixed=correct_display(restore_terms(r['display']))
         result.update(id=r['page_id'],source_id=f"S{r['page_id']}",text=text,evidence_text='\n\n'.join(b['text'] for b in blocks if b['kind'] in {'body','table','note'}),excerpt=r['raw'],display_excerpt=shown,corrections=fixed,passage_id=r['passage_id'],text_version=VERSION,score=round(r['score'],3),matched=[g[0] for g in groups],kind=r['kind'],structured=structured)
         selected.append(result)
-        if len(selected)>=limit:break
     return selected
