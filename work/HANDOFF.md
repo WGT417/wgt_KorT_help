@@ -8,7 +8,17 @@
 - 문학은 8개에서 33개로 늘렸다(시 10 · 소설 8 · 고전소설 5 · 고전시가 3 · 구비문학 1 · 문학교육 6).
 - 검사기 `python scripts/check_concepts.py`, 단위 테스트 `python -m unittest discover -s tests`(49개), `node --check dist/app.js` 모두 통과한 상태로 커밋됨.
 
-## 지금 하던 일: 문식성 항목 늘리기 (사용자 지시: "문식성도 늘려")
+## 2026-09-15 완료: 문식성 항목 확장 (화법 17 · 작문 12 · 독서 8)
+
+`work/concept-drafts/entries/*.json`에 초안을 쓰고 `apply.py`로 `concepts/문식성-*.json`에 병합했다. 결과: 화법 19 · 작문 16 · 독서 18 (문식성 53, 전체 137). 근거 쪽은 모두 dump로 본문을 읽고 `verified`로 확정했으며, 검사기·unittest 49개·`node --check dist/app.js` 모두 통과. 별칭 겹침 경고는 문식성 쪽은 모두 정리했고 남은 것은 문학 항목 간 겹침뿐이다.
+
+추가된 id — 작문: writing-theory/development, writing-theory/alternative, writing-process/cognitive-models, writing-affect/motivation-efficacy-anxiety, writing-process/strategies, writing-instruction/genre-and-context, writing-genre/informative, writing-genre/persuasive, writing-genre/expressive, writing-genre/writing-to-learn, writing-assessment/evaluation, writing-context/digital-literacy. 독서: reading-development/ability-and-stages, reading-text/types-structure-difficulty, reading-instruction/informational-text, reading-instruction/multimodal-text, reading-affect/motivation-attitude, reading-instruction/discussion-models, reading-instruction/content-area-reading, reading-assessment/evaluation.
+
+다음 할 일 후보: 사용자 검수(`review.status` → reviewed), 문학 항목 간 별칭 겹침 정리, 문법-보강 확대.
+
+---
+
+## (완료됨) 이전 작업 메모: 문식성 항목 늘리기 (사용자 지시: "문식성도 늘려")
 
 문식성은 독서 10 · 작문 4 · 화법 2로 얇아서, 개론서 5권(독서교육론 사회평론, 작문 교육론 사회평론, 작문 교육론 역락, 화법 교육론 역락, 국어교육을 위한 의사소통 이론)의 목차를 훑고 아래 목록을 잡았다. **화법부터** 쓰고 있었고, 17개 중 2개를 초안으로 써 둔 상태(아직 concepts에 병합 안 함).
 

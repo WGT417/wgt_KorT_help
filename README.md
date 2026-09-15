@@ -54,7 +54,7 @@ PDF는 자료 처리용으로만 보관합니다. 앱에는 PDF 링크·미리�
 - 항목 구조(schema 2): `summary`, `sections[{heading, intro?, items[{label?, text?, sub?, examples?, refs?}]}]`, `sources`, `review`. 본문에는 `**강조**`와 `` `어미` `` 두 가지 표시만 씁니다. `refs`는 `sources`의 순번이며 해당 항목 옆에 쪽 단추로 붙습니다. schema 1 항목(`explanation` 문단)은 요약과 문단만 표시하고, `steps`·`examples`·`counter_examples`·`common_errors`는 남아 있어도 화면에 내지 않습니다.
 - `문법.json`의 49개 항목과 `문법-보강.json`은 모두 schema 2이며, 우리말문법론·한국어문법총론 1·한국어표준문법·국어음운론 강의·쉽게 풀어 쓴 국어사 개론의 해당 쪽을 읽고 썼습니다.
 - 근거 쪽은 책 제목과 자료 페이지로 적고, 앱이 서재의 쪽 번호와 연결해 출처 창으로 엽니다. `status`가 `verified`면 본문을 읽고 확정한 쪽, `candidate`면 용어 일치로 찾은 후보 쪽입니다.
-- `review.status`가 `reviewed`가 되기 전까지 카드에 **초안 · 검수 전**을 표시합니다. 문법 49개·문식성 16개·문학 33개 항목은 모두 이 서재의 개론서 본문을 읽고 교사·임용 관점으로 작성한 초안입니다. 문학 항목은 시 10·소설 8·고전소설 5·고전시가 3·구비문학 1·문학교육 6개로 나뉩니다.
+- `review.status`가 `reviewed`가 되기 전까지 카드에 **초안 · 검수 전**을 표시합니다. 문법 49개·문식성 53개·문학 33개 항목은 모두 이 서재의 개론서 본문을 읽고 교사·임용 관점으로 작성한 초안입니다. 문학 항목은 시 10·소설 8·고전소설 5·고전시가 3·구비문학 1·문학교육 6개로, 문식성 항목은 화법 19·작문 16·독서 18개로 나뉩니다.
 - 검사: `python scripts/check_concepts.py`. 구조, 최소 분량, 연결 개념, 근거 쪽의 존재를 확인하며 테스트에서도 실행합니다.
 - 문법 항목 재이식: `python scripts/port_grammar_concepts.py <export.json> <references.json>`.
 
