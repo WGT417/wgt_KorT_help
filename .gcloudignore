@@ -1,6 +1,8 @@
-# Files NOT uploaded to Cloud Build / the container image.
-# Note: data/ is intentionally included (unlike .gitignore) because the
-# server reads library.sqlite3, the E5 model and page text from it.
+# Files NOT uploaded to Cloud Build by `gcloud builds submit`.
+# data/ is excluded here and fetched from the project bucket inside the build
+# (cloudbuild.yaml), so deploys work from any computer that has the code.
+# .dockerignore (used inside the build) keeps data/ so it lands in the image.
+data/
 .git/
 .gitignore
 .gcloudignore

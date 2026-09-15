@@ -1,0 +1,21 @@
+# Cloud Build: fetch data/ from the project bucket, then build the image.
+# The source upload (gcloud builds submit) excludes data/ via .gcloudignore, so
+# a deploy from any computer only needs the code. Run through scripts/cloud.py deploy.
+steps:
+  - id: fetch-data
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        mkdir -p data
+        gcloud storage rsync --recursive gs://${_BUCKET}/data data
+        du -sh data
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${_IMAGE}', '.']
+images: ['${_IMAGE}']
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

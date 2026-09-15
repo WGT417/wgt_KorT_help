@@ -1,0 +1,12 @@
+{
+  "project": "",
+  "region": "asia-northeast3",
+  "service": "kor-teacher",
+  "bucket": "",
+  "repository": "kor-teacher",
+  "memory": "2Gi",
+  "cpu": "1",
+  "max_instances": 1,
+  "min_instances": 0,
+  "timeout": 600
+}
