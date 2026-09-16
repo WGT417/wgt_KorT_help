@@ -53,17 +53,45 @@ def align(raw,display):
 
 def windows(raw,display):
     """Do not repair uncertain letters or splice noncontiguous sentences."""
+    return [(excerpt,text) for _,_,excerpt,text in sentence_runs(raw,display)]
+
+def chunks(raw,display,target=320,limit=640,minimum=40):
+    """Non-overlapping runs of clean sentences for dense retrieval, cut left to
+    right near `target` characters so each sentence is indexed once. Every run
+    is a window: a contiguous source excerpt that never ends mid-sentence.
+    Short definitions count, and a block ending in 다 without a period is a
+    finished sentence rather than one cut by the page."""
+    runs=sentence_runs(raw,display,minimum=minimum,closing=True)
+    if runs and runs[0][0] is None:
+        text=restore_terms(display)
+        return [(raw,text)] if not noise(text) and len(compact(text))>=minimum and len(text)<=limit else []
+    by_start={}
+    for i,j,excerpt,text in runs:by_start.setdefault(i,[]).append((j,excerpt,text))
+    result=[];after=0
+    for i in sorted(by_start):
+        if i<after:continue
+        options=[o for o in by_start[i] if len(o[2])<=limit] or by_start[i][:1]
+        pick=next((o for o in options if len(o[2])>=target),options[-1])
+        # A short tail that cannot stand as its own run joins this one.
+        if not any(s>pick[0] for s in by_start):pick=options[-1]
+        result.append((pick[1],pick[2]));after=pick[0]+1
+    return result
+
+def sentence_runs(raw,display,minimum=65,closing=False):
+    """(first sentence, last sentence, source excerpt, display text) for every
+    run of up to six clean sentences. (None, None, raw, display) when spacing
+    correction cannot be mapped back to the source glyphs."""
     display=restore_terms(display)
     spans=[];start=0
     for m in re.finditer(SENTENCE_END,display):
         spans.append((start,m.end(),True));start=m.end()
     # Text after the last sentence ending was cut by a page or block boundary.
-    if start<len(display):spans.append((start,len(display),False))
+    if start<len(display):spans.append((start,len(display),bool(closing and re.search(r'[가-힣]다\s*$',display[start:]))))
     if not spans:return []
     raw_offsets=[i for i,ch in enumerate(raw) if not ch.isspace()]
     offsets=[0]
     for ch in display:offsets.append(offsets[-1]+int(not ch.isspace()))
-    if offsets[-1]!=len(raw_offsets):return [(raw,display)]
+    if offsets[-1]!=len(raw_offsets):return [(None,None,raw,display)]
     result=[]
     for i,(start,end,complete) in enumerate(spans):
         # A sentence containing visible OCR damage is retained in full source,
@@ -76,11 +104,11 @@ def windows(raw,display):
             text=display[start:end].strip()
             if noise(display[spans[j][0]:end]) or end-spans[j][0]>600:break
             if len(text)>900:break
-            if len(compact(text))<65:continue
+            if len(compact(text))<minimum:continue
             lo=offsets[start];hi=offsets[end]
             if hi<=lo:continue
             excerpt=raw[raw_offsets[lo]:raw_offsets[hi-1]+1]
-            result.append((excerpt,text))
+            result.append((i,j,excerpt,text))
     return result
 
 def best_window(raw,display,groups):

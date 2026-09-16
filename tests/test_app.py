@@ -103,7 +103,9 @@ class HTTPTests(unittest.TestCase):
     def request(self,path,body=None,headers=None):
         h={'Origin':self.base,'X-CSRF-Token':server.CSRF,'Content-Type':'application/json'}
         if headers:h.update(headers)
-        return urlopen(Request(self.base+path,data=json.dumps(body).encode() if body is not None else None,headers=h),timeout=20)
+        # A reason request runs one search per planned subtopic (about 15s here). A
+        # client timeout leaves the server thread running into the next test's mocks.
+        return urlopen(Request(self.base+path,data=json.dumps(body).encode() if body is not None else None,headers=h),timeout=60)
     def test_search_does_not_call_openai_even_with_key(self):
         with patch.object(server,'API_KEY','not-a-real-secret-for-testing'),patch.object(server,'openai_call') as call:
             with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'search'}) as r:data=json.load(r)

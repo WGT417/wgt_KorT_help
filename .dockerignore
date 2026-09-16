@@ -22,4 +22,8 @@ AUDIT_REPORT.md
 data/tmp*/
 data/*.png
 data/text/**/*.ocr.json
+# The full-precision BGE-M3 model only builds the index; queries use model_quantized.onnx.
+data/models/bge-m3/model.onnx
+data/models/bge-m3/model.onnx_data
+data/models/**/*.download
 node_modules/

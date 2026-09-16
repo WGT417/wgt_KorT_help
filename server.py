@@ -152,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
                     init_passages(db)
                     reading_pages=db.execute('SELECT COUNT(*) FROM text_build WHERE version=?',(VERSION,)).fetchone()[0]
                     passage_count=db.execute("SELECT COUNT(*) FROM passages WHERE kind='body'").fetchone()[0]
-                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists(),'public':PUBLIC,'admin':self.is_admin(),'quota':self.quota_state()})
+                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists(),'public':PUBLIC,'admin':self.is_admin(),'quota':self.quota_state(),'semantic_search':semantic_ready()})
             match=re.fullmatch(r'/api/pages/(\d+)',path)
             if match:
                 with connect() as db:row=db.execute('SELECT p.*,b.title FROM pages p JOIN books b ON p.book_id=b.id WHERE p.id=?',(int(match[1]),)).fetchone()
@@ -247,6 +247,20 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError,ConnectionResetError):pass
         except Exception:return self.send(500,{'error':'처리하지 못했습니다. 원문 검색은 계속 사용할 수 있습니다.'})
 
+def semantic_ready():
+    try:
+        import vector_search
+        return vector_search.ready()
+    except Exception:return False
+
+def warm_semantic_search():
+    """Load the query model and vector index before the first question arrives."""
+    try:
+        import vector_search
+        if vector_search.ready():vector_search.embed(['준비'])
+    except Exception as error:print('의미 검색을 준비하지 못했습니다:',error,flush=True)
+
 if __name__=='__main__':
+    threading.Thread(target=warm_semantic_search,daemon=True).start()
     print(f'{"Public" if PUBLIC else "Local"} server on {HOST}:{PORT} (quota: {QUOTA.name if QUOTA else "unavailable"})' if PUBLIC else f'Local URL: http://localhost:{PORT}',flush=True)
     ThreadingHTTPServer((HOST,PORT),Handler).serve_forever()

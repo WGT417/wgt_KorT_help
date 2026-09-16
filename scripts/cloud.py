@@ -17,8 +17,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'deploy.json'
-# Never synced: SQLite side files, temporary extraction folders, audit screenshots.
-SYNC_EXCLUDE = r'(^|/)(tmp[^/]*|.*\.sqlite3-(wal|shm)|.*\.png)$'
+# Never synced: SQLite side files, temporary extraction folders, audit screenshots,
+# unfinished downloads, and the full-precision BGE-M3 model (2.3GB) that only
+# builds the vector index; the server answers queries with the int8 model.
+SYNC_EXCLUDE = r'(^|/)(tmp[^/]*|.*\.sqlite3-(wal|shm)|.*\.png|.*\.download|bge-m3/model\.onnx(_data)?)$'
 
 
 def load_config():

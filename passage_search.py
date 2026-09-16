@@ -47,6 +47,50 @@ def layout_source(db,page_id):
             for caption,block in zip(captions,tables):block['caption']=caption
     return '\n\n'.join(r['raw'] for r in kept),blocks,reading
 
+# Ranking with the BGE-M3 index: cosine similarity x100 plus a share of the
+# lexical score, so passages naming the concept stay ahead while passages that
+# explain it in other words can still be found. Values were tuned with
+# scripts/eval_retrieval.py on 137 concepts asked by name and by paraphrase.
+LEXICAL_WEIGHT=.45
+DENSE_CANDIDATES=60
+# Similarity a passage found only by meaning needs; higher when no passage has
+# the question's words, where unrelated questions otherwise still get answers.
+DENSE_FLOOR=.55
+DENSE_FLOOR_ALONE=.58
+CORE_MARGIN=8
+WIDE_MARGIN=15
+
+def hybrid(db,query,category,book_id,lexical,admissible,penalty):
+    """Lexical candidates with their semantic similarity, plus passages found
+    only by meaning. Each row carries `match`: 'lexical' or 'semantic'."""
+    import vector_search as vs
+    q=vs.embed([query],max_tokens=256)[0]
+    top=lexical[:40]
+    similarity=vs.passage_similarity(q,{r['passage_id'] for r in top})
+    # Tables and other windows the index does not cover are compared directly.
+    missing=[r for r in top if r['passage_id'] not in similarity][:8]
+    if missing:similarity.update({r['passage_id']:float(v@q) for r,v in zip(missing,vs.embed([r['display'] for r in missing]))})
+    ranked={}
+    for r in top:
+        s=similarity.get(r['passage_id'],0.0)
+        r.update(lexical_score=r['score'],semantic_score=s,match='lexical',score=s*100+r['score']*LEXICAL_WEIGHT)
+        ranked[r['passage_id']]=r
+    floor=DENSE_FLOOR if top else DENSE_FLOOR_ALONE
+    hits=[h for h in vs.nearest(q,category,book_id,k=DENSE_CANDIDATES) if h['semantic']>=floor and h['passage_id'] not in ranked]
+    if hits:
+        rows={r['passage_id']:dict(r) for r in db.execute('''SELECT x.id AS passage_id,x.page_id,x.ordinal,x.kind,x.raw,x.display,
+          p.book_id,p.pdf_page,p.printed_page,p.number_status,p.method,p.quality,b.title,b.category
+          FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.id IN (%s)'''%','.join('?'*len(hits)),[h['passage_id'] for h in hits])}
+        for h in hits:
+            r=rows.get(h['passage_id'])
+            # Skip chunks of passages rebuilt after the index was made.
+            if r is None or h['passage_id'] in ranked or h['excerpt'] not in r['raw']:continue
+            r['raw'],r['display']=h['excerpt'],h['text'];c=compact(h['text']);r['compact']=c
+            if not admissible(r,c):continue
+            r.update(lexical_score=0.0,semantic_score=h['semantic'],match='semantic',score=h['semantic']*100-penalty(r,c))
+            ranked[h['passage_id']]=r
+    return sorted(ranked.values(),key=lambda r:(-r['score'],r['page_id'],r['ordinal']))
+
 def search(db,query,category,book_id,limit,groups):
     if not groups or limit<=0:return []
     where=["b.category!='참고자료'",'x.version=?'];args=[VERSION]
@@ -135,18 +179,41 @@ def search(db,query,category,book_id,limit,groups):
         if noisy>max(4,len(c)*.012):score*=.35
         r['score']=score;scored.append(r)
     scored.sort(key=lambda r:(-r['score'],r['page_id'],r['ordinal']))
+    def admissible(r,c):
+        """The lexical loop's filters that do not depend on query words."""
+        if domain and len(requested_domains)==1 and any(r['title'].startswith(t) for f in families if f!=domain for t in f):return False
+        bullets=len(re.findall(r'[·•]',r['raw']))
+        if bullets>=8 and len(re.findall(r'다[.!?。]',r['raw']))<bullets/2:return False
+        if not catalog_request and (len(re.findall(r'교과서|출판사|천재교육|비상|지학사|신사고',c))>=3 or len(re.findall(r'성취기준|교육과정|교과서|단원',c))>=2):return False
+        return True
+    def penalty(r,c):
+        """Points off a passage found by meaning, mirroring the lexical demotions."""
+        points=0
+        if not catalog_request and re.search(r'교과서|성취기준|이책지은이|용어를쓰|이책에서는',c):points+=4
+        if domain and max((sum(c.count(t) for t in f) for f in families if f!=domain),default=0)>sum(c.count(t) for t in domain)*1.5:points+=8
+        if r['kind']=='note':points+=2
+        if r['quality']=='review':points+=8
+        if '국어사' in r['title'] and not re.search(r'중세|고대|근대|역사|국어사|변천|옛',query):points+=4
+        return points
+    import vector_search
+    semantic=dense=vector_search.ready()
+    if dense:scored=hybrid(db,query,category,book_id,scored,admissible,penalty)
+    elif scored:
+        from local_semantics import ready,rerank
+        semantic=ready()
+        if semantic:scored=rerank(query,scored[:40])
     if not scored:return []
-    from local_semantics import ready,rerank
-    semantic=ready()
-    if semantic:scored=rerank(query,scored[:40])
-    # Every candidate already contains all query terms inside one clean
-    # excerpt, so the floor only drops clearly weaker matches. Semantic scores
-    # sit within a narrow band (a few points across the whole list), so a
-    # tighter floor would hide most of the passages that mention the concept.
-    floor=scored[0]['score']-25 if semantic else scored[0]['score']*.45
+    # Lexical candidates contain all query terms inside one clean excerpt, so the
+    # floor only drops clearly weaker matches. Semantic scores sit within a narrow
+    # band, so a tighter floor would hide most passages that mention the concept.
+    best=scored[0]['score']
+    floor=best-(WIDE_MARGIN if dense else 25) if semantic else best*.45
+    lexical_found=any(r.get('match','lexical')=='lexical' for r in scored)
     candidates=[];seen=set()
     for r in scored:
         if r['score']<floor or r['page_id'] in seen:continue
+        # A passage without the question's words joins exact matches only when it is nearly as strong as the best.
+        if r.get('match')=='semantic' and lexical_found and r['score']<best-CORE_MARGIN:continue
         seen.add(r['page_id']);candidates.append(r)
     # A concept is often developed in another book at a lower lexical score:
     # secure each book's best passage first, then fill with the rest by score.
@@ -164,6 +231,6 @@ def search(db,query,category,book_id,limit,groups):
         # Tables that name the concept, or that directly follow the matched paragraph.
         structured=[{'rows':b['rows'],'text':b['text'],'caption':b.get('caption','')} for b in reading if b['kind']=='table' and (b['raw'] in tables.get(r['page_id'],[]) or r['ordinal']<b['ordinal']<=r['ordinal']+3 or any(t in compact(b.get('caption','')) for g in groups for t in g))]
         shown,fixed=correct_display(restore_terms(r['display']))
-        result.update(id=r['page_id'],source_id=f"S{r['page_id']}",text=text,evidence_text='\n\n'.join(b['text'] for b in blocks if b['kind'] in {'body','table','note'}),excerpt=r['raw'],display_excerpt=shown,corrections=fixed,passage_id=r['passage_id'],text_version=VERSION,score=round(r['score'],3),matched=[g[0] for g in groups],kind=r['kind'],structured=structured)
+        result.update(id=r['page_id'],source_id=f"S{r['page_id']}",text=text,evidence_text='\n\n'.join(b['text'] for b in blocks if b['kind'] in {'body','table','note'}),excerpt=r['raw'],display_excerpt=shown,corrections=fixed,passage_id=r['passage_id'],text_version=VERSION,score=round(r['score'],3),matched=[g[0] for g in groups],kind=r['kind'],structured=structured,match=r.get('match','lexical'),semantic_score=round(r['semantic_score'],4) if 'semantic_score' in r else None)
         selected.append(result)
     return selected

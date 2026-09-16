@@ -62,3 +62,4 @@ table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-he
 .term-source{padding:10px 14px;background:#f7f9fc;border-radius:9px}
 .term-source .reference-button{margin-bottom:6px}
 .term-quote{margin:4px 0 0;line-height:1.85;font-size:15px;word-break:keep-all}
+.meaning-badge{color:#5a4687;background:#f3effb;border-color:#d8cdee}
