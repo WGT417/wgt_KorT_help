@@ -147,7 +147,9 @@ function renderTerms(terms){
                 const row=el('div',undefined,'term-source');row.append(conceptSourceButton(s));
                 if(!s.indexed)row.append(el('span','찾아보기 밖','term-tag'));
                 if(s.ocr)row.append(el('span','오인식 있음','term-tag warn'));
-                row.append(el('p',s.quote,'term-quote'));list.append(row);
+                // The defining sentence, then what the paragraph says next about the term.
+                const p=el('p',s.quote,'term-quote');if(s.more)p.append(document.createTextNode(' '),el('span',s.more,'term-quote-more'));
+                row.append(p);list.append(row);
             }
             card.append(list);
         }
@@ -217,6 +219,7 @@ async function openSource(id,quote=''){
         for(const block of blocks){
             if(block.kind==='body'){
                 // Whole paragraph, in order. Sentences with visible OCR damage stay in place but are flagged.
+                if(block.heading)target.append(el('p',block.heading,'source-heading'));
                 const p=el('p',undefined,'source-full-text');
                 for(const seg of block.segments||[{text:block.text,suspect:false}]){
                     if(seg.suspect){const span=el('span',seg.text,'suspect');span.title='글자 오인식이 의심되는 문장입니다. 아래 교정 전 추출문이나 원문 이미지와 대조하세요.';p.append(span);}

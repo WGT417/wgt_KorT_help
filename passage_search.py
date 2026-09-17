@@ -1,7 +1,7 @@
 """Rank explanatory passages, not pages that merely contain query words."""
 import math,re,itertools
 from collections import Counter
-from text_pipeline import compact,VERSION,restore_terms,correct_display,tidy_display
+from text_pipeline import compact,VERSION,restore_terms,correct_display,tidy_display,split_heading
 from passage_text import best_window,clean_blocks,noise,align,suspect_segments
 
 def table_rows(raw,display):
@@ -24,12 +24,13 @@ def layout_source(db,page_id):
     for i,r in enumerate(kept):
         if r['kind']=='body':
             blocks.extend({'text':text,'kind':'body','ordinal':r['ordinal']} for text in clean_blocks(r['raw'],r['display']))
-            display,fixed=tidy_display(r['raw'],restore_terms(r['display']))
+            heading,body_raw,body_display=split_heading(r['raw'],restore_terms(r['display']))
+            display,fixed=tidy_display(body_raw,body_display)
             segments=[]
             for seg in suspect_segments(display):
                 text,n=correct_display(seg['text']);fixed+=n
                 segments.append({'text':text,'suspect':seg['suspect']})
-            if segments:reading.append({'kind':'body','ordinal':r['ordinal'],'text':' '.join(x['text'] for x in segments),'segments':segments,'corrections':fixed})
+            if segments:reading.append({'kind':'body','ordinal':r['ordinal'],'heading':correct_display(heading)[0],'text':' '.join(x['text'] for x in segments),'segments':segments,'corrections':fixed})
         elif r['kind']=='table':
             cells=table_rows(r['raw'],r['display'])
             if sum(len(c) for row in cells for c in row)>=30:
@@ -87,7 +88,7 @@ def hybrid(db,query,category,book_id,lexical,admissible,penalty):
             r=rows.get(h['passage_id'])
             # Skip chunks of passages rebuilt after the index was made.
             if r is None or h['passage_id'] in ranked or h['excerpt'] not in r['raw']:continue
-            r['raw'],r['display']=h['excerpt'],h['text'];c=compact(h['text']);r['compact']=c
+            r['passage_raw']=r['raw'];r['raw'],r['display']=h['excerpt'],h['text'];c=compact(h['text']);r['compact']=c
             if not admissible(r,c):continue
             r.update(lexical_score=0.0,semantic_score=h['semantic'],match='semantic',score=h['semantic']*100-penalty(r,c))
             ranked[h['passage_id']]=r
@@ -141,7 +142,7 @@ def search(db,query,category,book_id,limit,groups):
         if not catalog_request and len(re.findall(r'교과서|출판사|천재교육|비상|지학사|신사고',c))>=3:continue
         window=best_window(r['raw'],r['display'],groups)
         if not window:continue
-        r['raw'],r['display']=window;c=compact(r['display']);r['compact']=c
+        r['passage_raw']=r['raw'];r['raw'],r['display']=window;c=compact(r['display']);r['compact']=c
         explanatory=len(re.findall(r'한다|된다|이다|있다|없다|뜻하|의미하|가리키|말한다|이라|해야|통해|때문|과정|전략|구분|나뉘|예를',c))
         if len(c)<65 or not re.search(r'[가-힣]다(?=[.!?。]|$|\s|[（(])',r['display']):continue
         score=sum(w*(1+math.log1p(min(6,sum(c.count(t) for t in g)))) for w,g in zip(weights,groups))
@@ -232,8 +233,12 @@ def search(db,query,category,book_id,limit,groups):
         result={k:r[k] for k in ['book_id','pdf_page','printed_page','number_status','method','quality','title','category']}
         # Tables that name the concept, or that directly follow the matched paragraph.
         structured=[{'rows':b['rows'],'text':b['text'],'caption':b.get('caption','')} for b in reading if b['kind']=='table' and (b['raw'] in tables.get(r['page_id'],[]) or r['ordinal']<b['ordinal']<=r['ordinal']+3 or any(t in compact(b.get('caption','')) for g in groups for t in g))]
-        shown,marks=tidy_display(r['raw'],restore_terms(r['display']))
+        heading,body_raw,body_display='',r['raw'],restore_terms(r['display'])
+        if r.get('passage_raw','').startswith(r['raw'].split('\n',1)[0]):heading,body_raw,body_display=split_heading(body_raw,body_display)
+        shown,marks=tidy_display(body_raw,body_display)
         shown,fixed=correct_display(shown);fixed+=marks
+        # A heading the layout joined to the paragraph goes on its own line (.reading-passage keeps line breaks).
+        if heading:shown=correct_display(heading)[0]+'\n'+shown
         result.update(id=r['page_id'],source_id=f"S{r['page_id']}",text=text,evidence_text='\n\n'.join(b['text'] for b in blocks if b['kind'] in {'body','table','note'}),excerpt=r['raw'],display_excerpt=shown,corrections=fixed,passage_id=r['passage_id'],text_version=VERSION,score=round(r['score'],3),matched=[g[0] for g in groups],kind=r['kind'],structured=structured,match=r.get('match','lexical'),semantic_score=round(r['semantic_score'],4) if 'semantic_score' in r else None)
         selected.append(result)
     return selected

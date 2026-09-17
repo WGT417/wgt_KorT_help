@@ -15,7 +15,7 @@ from pathlib import Path
 from collections import Counter,defaultdict
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import core
-from text_pipeline import compact,restore_terms,tidy_display,glyph_gaps,term_starts,SENTENCE_INITIAL,VERSION
+from text_pipeline import compact,restore_terms,tidy_display,glyph_gaps,term_starts,split_heading,SENTENCE_INITIAL,VERSION
 from passage_text import SENTENCE_END,noise,ocr_damage
 from term_index import definition_score,DEFINITION
 
@@ -54,21 +54,24 @@ EXAMPLE=re.compile(r'^\(?\s*[\d\s]{1,6}[′]?\s*\)?\s*[가-하]\s*\.|^[가-하]\
 FRAGMENT=re.compile(r'(?:의|을|를|은|는|에|에서|으로|로|와|과|도|만|하여|하고|하며|되어|되며|이며|이고|으며|며|고|서|는데|지만|다|요)\s')
 HEADING=re.compile(r'^\s*(?:\d+(?:\s*\.\s*\d+)*\s*\.|제\s*\d+\s*[장절편부])\s*\S')
 
-def page_sentences(db,page_id,joined):
-    """Reading sentences of a page's body text and side notes: footnote marks
-    dropped, a numbered heading line cut off, example lines and sentences with
-    visible OCR damage skipped."""
+def page_sentences(db,page_id,joined,misread):
+    """Reading sentences of a page's body text and side notes, in order:
+    {'kind', 'text', 'previous', 'passage', 'skip'}. Footnote marks are dropped,
+    misread terms corrected and a heading line cut off; example lines, cut
+    sentences and sentences with visible OCR damage are kept with skip=True so
+    that what follows a definition is known to be contiguous."""
     result=[]
-    for r in db.execute("SELECT kind,raw,display FROM passages WHERE page_id=? AND kind IN ('body','note') AND version=? ORDER BY ordinal",(page_id,VERSION)):
+    for r in db.execute("SELECT ordinal,kind,raw,display FROM passages WHERE page_id=? AND kind IN ('body','note') AND version=? ORDER BY ordinal",(page_id,VERSION)):
         raw,display=r['raw'],restore_terms(r['display'])
+        heading,raw,display=split_heading(raw,display)
         lines=raw.split('\n',1)
-        if len(lines)==2 and HEADING.match(lines[0]) and len(lines[0])<60 and not re.search(r'[다요][.!?。]',lines[0]):
+        if not heading and len(lines)==2 and HEADING.match(lines[0]) and len(lines[0])<60 and not re.search(r'[다요][.!?。]',lines[0]):
             cut=len(compact(lines[0]));seen=0
             for i,ch in enumerate(display):
                 if seen==cut:display=display[i:];break
                 seen+=not ch.isspace()
             raw=lines[1]
-        text,_=tidy_display(raw,display,joined)
+        text,_=tidy_display(raw,display,joined,misread)
         start=0;previous=None
         for m in list(re.finditer(SENTENCE_END,text))+[None]:
             end=m.end() if m else len(text)
@@ -78,13 +81,38 @@ def page_sentences(db,page_id,joined):
             # A sentence opening with a particle or a connective ending lost its start ("하여 ‘단어구름’이라고 부른다.").
             cut=cut or bool(FRAGMENT.match(sentence))
             if cut or len(compact(sentence))<10 or len(sentence)>400 or noise(sentence) or EXAMPLE.match(sentence):
+                if sentence:result.append({'kind':r['kind'],'text':sentence,'previous':None,'passage':r['ordinal'],'skip':True})
                 previous=None;continue
             # A side note opens with its reference mark: "엉 ‘관형사절’은 ...".
             if r['kind']=='note' and re.match(r'[가-힣$]\s+[‘“]',sentence) and sentence[0] not in SENTENCE_INITIAL:sentence=sentence[1:].lstrip()
             # ...or with its note number: "16 이런 변이음을 조건 변이음이라고 한다".
             if r['kind']=='note':sentence=re.sub(r'^\d{1,3}\s*\)?\s+(?=[가-힣‘“(])','',sentence)
-            result.append((r['kind'],sentence,previous));previous=sentence
+            result.append({'kind':r['kind'],'text':sentence,'previous':previous,'passage':r['ordinal'],'skip':False});previous=sentence
     return result
+
+POINTER=re.compile(r'(?:이를|이것을|이러한|이런|이와\s*같은|이처럼|이\s*같은|그것을|그러한)\s')
+# Sentences that lead elsewhere instead of explaining: "다음과 같다", "살펴보기로 하자".
+ASIDE=re.compile(r'다음과\s*같|아래와\s*같|다음\s*예|다음\s*[몇두세네]|살펴보|알아보|보기로\s*하|논의하기로|다루기로|참조|참고|[:：]$|^\(\s*\d')
+# A following sentence stays on topic when it names the term or picks up the one before it.
+CARRIES=re.compile(r'(?:이|이는|이것은|이것이|이들은|이러한|이런|이와|이때|이때의|이곳의|여기서|여기에서|즉|곧|다시\s*말해|따라서|그러므로|그래서|또한|또|특히|다만|예를\s*들어|가령|그런데|그러나|하지만|그리고|결국|요컨대|이처럼|이렇게|이렇듯)[\s,，]')
+def with_context(sentences,i,key):
+    """The defining sentence with the sentence it points back to (이를 X라 한다)
+    and up to two clean sentences that follow it in the same paragraph and stay
+    on the term, as (quote, more). Read through, sentences that neither named
+    the term nor picked up the one before drifted ("빨간 장미꽃이 아름답다 하는
+    말은" after 비유적 이미지), and ones citing examples not shown ("(3다)의
+    ‘길이’는") read as noise."""
+    s=sentences[i];quote=s['text']
+    if s['previous'] and POINTER.match(quote) and len(s['previous'])+len(quote)<320:quote=s['previous']+' '+quote
+    more=[];size=len(quote)
+    for t in sentences[i+1:i+3]:
+        if t['passage']!=s['passage'] or t['skip'] or t['kind']!=s['kind']:break
+        text=re.sub(r'^(?:\[덧붙임\s*\d+\]\.?|\d{1,3}\s*\)|\d{1,3}(?=\s+[가-힣]))\s*','',t['text'])
+        if ocr_damage(text) or ASIDE.search(text) or FRAGMENT.match(text) or re.search(r"\(\s*\d{1,3}\s*[가-하]?(?:\s*[~,，-]\s*[가-하])?\s*['′]?\)",text):break
+        if key not in key_of(text) and not CARRIES.match(text):break
+        if size+len(text)>420:break
+        more.append(text);size+=len(text)
+    return quote,' '.join(more)
 
 def defining_quote(sentences,key,longer):
     """The page's sentence that best defines the term, and its score (see
@@ -94,14 +122,14 @@ def defining_quote(sentences,key,longer):
     notes carry more OCR damage, so only a note that names the term outright
     (X라고 부른다) counts."""
     best=(0,None)
-    for kind,sentence,previous in sentences:
-        score=definition_score(sentence,key,longer)
-        if score and kind=='note':score-=3
-        if score>best[0]:
-            # "이를 관형사절이라 한다." needs the sentence it points back to.
-            if previous and re.match(r'(?:이를|이것을|이러한|이런|이와\s*같은|이처럼|이\s*같은|그것을|그러한)\s',sentence) and len(previous)+len(sentence)<320:sentence=previous+' '+sentence
-            best=(score,sentence)
-    return (best[1] if best[0]>=DEFINITION else None),best[0]
+    for i,s in enumerate(sentences):
+        if s['skip']:continue
+        score=definition_score(s['text'],key,longer)
+        if score and s['kind']=='note':score-=3
+        if score>best[0]:best=(score,i)
+    if best[0]<DEFINITION:return None,'',best[0]
+    quote,more=with_context(sentences,best[1],key)
+    return quote,more,best[0]
 
 NAMED=re.compile(r'(?:\([^)]{0,40}\))?(?:이란|란(?!무엇|어떤)|이라고|라고|이라|라(?=도|는|를|하|한|부|불|일|칭|명|정|이|말)|으로도?(?=불리|불린|부르|부른|일컫|칭하|칭한|명명)|로도?(?=불리|불린|부르|부른|일컫|칭하|칭한|명명))')
 SUBJECT=re.compile(r'(?:\([^)]{0,40}\))?(?:은|는|이란|란|이라는것은|라는것은|이라함은|라함은|의개념은|의정의는)')
@@ -117,7 +145,7 @@ def defined_keys(sentence,keys,longest):
         if n:found.add(c[i:i+n])
     return found
 
-def library_definitions(db,terms,cache,joined,longer):
+def library_definitions(db,terms,cache,joined,misread,longer):
     """Pages anywhere in the library that define an indexed term, best page per
     book. A book's index can point to where a term is used rather than where it
     is explained, and a term one book indexes is often defined in another. Read
@@ -128,15 +156,65 @@ def library_definitions(db,terms,cache,joined,longer):
     pages=db.execute("SELECT p.id,p.pdf_page,b.title,b.category FROM pages p JOIN books b ON b.id=p.book_id WHERE b.category!='참고자료' ORDER BY b.title,p.pdf_page").fetchall()
     best={}
     for p in pages:
-        if p['id'] not in cache:cache[p['id']]=page_sentences(db,p['id'],joined)
-        for kind,sentence,previous in cache[p['id']]:
-            for key in defined_keys(sentence,keys,longest):
-                score=definition_score(sentence,key,longer(key))-3*(kind=='note')
-                if score<9 or ocr_damage(sentence):continue
-                if previous and re.match(r'(?:이를|이것을|이러한|이런|이와\s*같은|이처럼|이\s*같은|그것을|그러한)\s',sentence) and len(previous)+len(sentence)<320:sentence=previous+' '+sentence
+        if p['id'] not in cache:cache[p['id']]=page_sentences(db,p['id'],joined,misread)
+        sentences=cache[p['id']]
+        for i,s in enumerate(sentences):
+            if s['skip']:continue
+            for key in defined_keys(s['text'],keys,longest):
+                score=definition_score(s['text'],key,longer(key))-3*(s['kind']=='note')
+                if score<9 or ocr_damage(s['text']):continue
                 slot=(key,p['title'])
-                if slot not in best or score>best[slot]['score']:best[slot]={'book':p['title'],'category':p['category'],'pdf_page':p['pdf_page'],'page_id':p['id'],'quote':sentence,'score':score,'indexed':False}
+                if slot not in best or score>best[slot]['score']:
+                    quote,more=with_context(sentences,i,key)
+                    best[slot]={'book':p['title'],'category':p['category'],'pdf_page':p['pdf_page'],'page_id':p['id'],'quote':quote,'more':more,'score':score,'indexed':False}
     return best
+
+# Jamo pairs the OCR confuses, from the word corrections data/ocr-corrections.json
+# accepted (히/하, 둥/등, 볍/법, 틀/들, 영/명, 슴/습 ...), by initial, medial, final.
+CONFUSED=({frozenset(p) for p in [(11,6),(16,3),(5,16),(0,3)]},
+          {frozenset(p) for p in [(20,0),(20,4),(0,4),(6,4),(13,18),(2,4),(11,9),(14,9),(5,1),(20,6),(8,13),(18,8)]},
+          {frozenset(p) for p in [(16,17)]})
+def confusable(a,b):
+    x=divmod(ord(a)-0xAC00,588);x=(x[0],*divmod(x[1],28))
+    y=divmod(ord(b)-0xAC00,588);y=(y[0],*divmod(y[1],28))
+    diff=[i for i in range(3) if x[i]!=y[i]]
+    return len(diff)==1 and frozenset((x[diff[0]],y[diff[0]])) in CONFUSED[diff[0]]
+
+# Read through the corrections: real words or names one stroke from a term.
+NOT_MISREAD={'고어체','시사시','드러다','동사론','박명희','주명희','동정성'}
+def misreadings(db,keys):
+    """Words one confusable jamo away from an index term of three to eight
+    syllables (연걸어미, 피통문, 상싱력, 렉스트, 검춘수), where the source wrote the
+    word as one run, the term is at least 20 times as common, the last syllable
+    is the same (형태로 is not 형태소) and the Kiwi language model scores the
+    corrected word at least 6 higher. Read through, the survivors were misreads;
+    the Kiwi gain is what separates real words such as 이성주의, 에로스 or a
+    scholar 김소영 (gain 2 or less) from misreads (7 or more)."""
+    keys={k for k in keys if re.fullmatch(r'[가-힣]{3,8}',k)}
+    pattern=defaultdict(list)
+    for k in keys:
+        for i in range(len(k)-1):pattern[k[:i]+'\0'+k[i+1:]].append((k,i))
+    sizes=sorted({len(k) for k in keys});exact=Counter();seen=Counter()
+    for r in db.execute("SELECT x.raw,x.display FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.version=? AND x.kind IN ('body','note','table') AND b.category!='참고자료'",(VERSION,)):
+        if compact(r['raw'])!=compact(r['display']):continue
+        text,gaps,_=glyph_gaps(r['display']);raw_gaps=glyph_gaps(r['raw'])[1]
+        for p,ch in enumerate(text):
+            if not '가'<=ch<='힣' or (p and not raw_gaps[p] and '가'<=text[p-1]<='힣'):continue
+            for n in sizes:
+                word=text[p:p+n]
+                if len(word)<n:break
+                if word in keys:exact[word]+=1;continue
+                if any(raw_gaps[q] for q in range(p+1,p+n)):continue
+                for i in range(n-1):
+                    for k,_ in pattern.get(word[:i]+'\0'+word[i+1:],()):
+                        if confusable(word[i],k[i]):seen[(word,k)]+=1
+    from kiwipiepy import Kiwi
+    kiwi=Kiwi(num_workers=2);score=lambda w:kiwi.analyze(w+'의 개념',top_n=1)[0][1]
+    found={}
+    for (word,k),count in seen.items():
+        if word in keys or word in NOT_MISREAD or exact[k]<10 or count*20>exact[k]:continue
+        if score(k)-score(word)>=6:found[word]=k
+    return dict(sorted(found.items()))
 
 def spacing(db,keys):
     """Terms the books write as one word. For every word start in the reading
@@ -215,6 +293,8 @@ def main():
         joined=spacing(db,set(hangul)|{k[:2] for k in hangul})
         print('joined spellings',len(joined),flush=True)
         joined_terms=(frozenset(joined),max(map(len,joined),default=0))
+        misread=misreadings(db,terms)
+        print('misread terms',len(misread),flush=True)
         # Defining sentences. A longer indexed term containing this one
         # (동격 관형사절 for 관형사절) is not a definition of this one.
         by_length=sorted(terms,key=len);n=0;cache={};longer_of={}
@@ -223,14 +303,15 @@ def main():
             return longer_of[key]
         for key,entry in terms.items():
             for s in entry['sources']:
-                if s['page_id'] not in cache:cache[s['page_id']]=page_sentences(db,s['page_id'],joined_terms)
-                s['quote'],s['score']=defining_quote(cache[s['page_id']],key,longer(key))
+                if s['page_id'] not in cache:cache[s['page_id']]=page_sentences(db,s['page_id'],joined_terms,misread)
+                s['quote'],s['more'],s['score']=defining_quote(cache[s['page_id']],key,longer(key))
                 if s['quote']:s['ocr']=ocr_damage(s['quote'])
+                if not s['more']:del s['more']
                 n+=1
             if n%2000<len(entry['sources']):print('quotes',n,flush=True)
         # Definitions away from the index pages, for books with no definition row yet.
         added=0
-        for (key,book),s in library_definitions(db,terms,cache,joined_terms,longer).items():
+        for (key,book),s in library_definitions(db,terms,cache,joined_terms,misread,longer).items():
             entry=terms[key]
             if any(x['book']==book and (x['score']>=DEFINITION or abs(x['pdf_page']-s['pdf_page'])<=1) for x in entry['sources']):continue
             entry['sources'].append(s);added+=1
@@ -238,7 +319,7 @@ def main():
         for entry in terms.values():
             for s in entry['sources']:
                 s['printed_page']=db.execute('SELECT printed_page FROM pages WHERE id=?',(s['page_id'],)).fetchone()['printed_page']
-    out={'generated':time.strftime('%Y-%m-%d %H:%M'),'text_version':VERSION,'books':report,'joined':joined,
+    out={'generated':time.strftime('%Y-%m-%d %H:%M'),'text_version':VERSION,'books':report,'joined':joined,'misread':misread,
          'terms':{key:{'label':e['label'].most_common(1)[0][0],'variants':sorted(e['label']),'sources':sorted(e['sources'],key=lambda s:(s['book'],s['pdf_page']))} for key,e in sorted(terms.items())}}
     (core.DATA/'term-index.json').write_text(json.dumps(out,ensure_ascii=False),encoding='utf-8')
     quoted=sum(1 for e in out['terms'].values() for s in e['sources'] if s['quote'])

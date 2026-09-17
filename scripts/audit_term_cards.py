@@ -8,7 +8,8 @@
 3. Screen text: the source-card excerpts for every concept name, counted by
    the kinds of OCR damage still visible after display cleanup.
 4. Display cleanup over every body and note paragraph: footnote marks dropped,
-   misread commas restored.
+   misread commas restored, misread index terms corrected, heading lines set
+   apart; and how many card definitions carry the sentences that follow them.
 
 Result: data/term-card-audit.json. Precision of the definition rules was
 judged by reading samples; see README (찾아보기 용어 사전).
@@ -22,7 +23,7 @@ import core
 from concepts import all_concepts
 from retrieval import ALIASES
 from term_index import match_terms
-from text_pipeline import VERSION,note_marks
+from text_pipeline import VERSION,note_marks,tidy_display,split_heading,restore_terms
 from passage_text import noise,ocr_damage
 
 def key_of(term):return re.sub(r'[\s\-‘’\'"·]','',term).lower()
@@ -31,7 +32,7 @@ def main():
     start=time.time();report={'generated':time.strftime('%Y-%m-%d %H:%M'),'text_version':VERSION}
     terms=json.loads((core.DATA/'term-index.json').read_text(encoding='utf-8'))['terms']
     sources=[s for e in terms.values() for s in e['sources']]
-    report['index']={'terms':len(terms),'terms_with_definition':sum(any(s['quote'] for s in e['sources']) for e in terms.values()),
+    report['index']={'definitions_with_following_sentences':sum(bool(s.get('more')) for s in sources),'terms':len(terms),'terms_with_definition':sum(any(s['quote'] for s in e['sources']) for e in terms.values()),
         'index_pages':sum(s.get('indexed',True) for s in sources),'definitions':sum(bool(s['quote']) for s in sources),
         'definitions_away_from_index':sum(bool(s['quote']) and not s.get('indexed',True) for s in sources),
         'definitions_with_ocr_damage':sum(bool(s.get('ocr')) for s in sources)}
@@ -53,13 +54,18 @@ def main():
             if kinds:damaged.append({'query':query,'book':s['title'],'pdf_page':s['pdf_page'],'kinds':kinds,'text':text[:200]})
     report['concept_benchmark']={'counts':dict(bench),'no_definition':lists['no definition'],'not_in_index':lists['not in index']}
     report['screen']={'queries':sum(bench.values()),'source_cards':cards,'cards_with_visible_damage':len(damaged),'kinds':dict(screen),'examples':damaged[:60]}
-    dropped=commas=0
+    dropped=commas=misread=headings=0
     with core.connect() as db:
-        for r in db.execute("SELECT x.raw FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.version=? AND x.kind IN ('body','note') AND b.category!='참고자료'",(VERSION,)):
-            for _,_,replacement in note_marks(r['raw']):
+        for r in db.execute("SELECT x.raw,x.display,x.kind FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.version=? AND x.kind IN ('body','note') AND b.category!='참고자료'",(VERSION,)):
+            marks=note_marks(r['raw'])
+            for _,_,replacement in marks:
                 if replacement:commas+=1
                 else:dropped+=1
-    report['display_cleanup']={'footnote_marks_dropped':dropped,'commas_restored':commas}
+            display=restore_terms(r['display'])
+            # tidy_display leaves a paragraph whose spacing does not map to the source untouched.
+            if re.sub(r'\s','',r['raw'])==re.sub(r'\s','',display):misread+=tidy_display(r['raw'],display)[1]-len(marks)
+            if r['kind']=='body' and split_heading(r['raw'],display)[0]:headings+=1
+    report['display_cleanup']={'footnote_marks_dropped':dropped,'commas_restored':commas,'misread_terms_corrected':misread,'headings_set_apart':headings}
     report['seconds']=round(time.time()-start)
     (core.DATA/'term-card-audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=1),encoding='utf-8')
     print(json.dumps({k:v for k,v in report.items() if k!='screen'},ensure_ascii=False,indent=1))

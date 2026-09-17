@@ -108,7 +108,8 @@ def match_terms(query,category='전체',limit=3):
             for s in pages.values():
                 row=db.execute('SELECT id,printed_page,number_status,quality FROM pages WHERE id=?',(s['page_id'],)).fetchone()
                 quote=correct_display(s['quote'])[0] if s.get('quote') else None
-                item={'book':s['book'],'title':s['book'],'category':s['category'],'pdf_page':s['pdf_page'],'quote':quote,'definition':(s.get('score') or 0)>=DEFINITION,'indexed':s.get('indexed',True),'ocr':bool(s.get('ocr')),'term':s.get('term',entry['label']),'id':row['id'] if row else None,'printed_page':row['printed_page'] if row else None,'quality':row['quality'] if row else None}
+                more=correct_display(s['more'])[0] if quote and s.get('more') else ''
+                item={'book':s['book'],'title':s['book'],'category':s['category'],'pdf_page':s['pdf_page'],'quote':quote,'more':more,'definition':(s.get('score') or 0)>=DEFINITION,'indexed':s.get('indexed',True),'ocr':bool(s.get('ocr')),'term':s.get('term',entry['label']),'id':row['id'] if row else None,'printed_page':row['printed_page'] if row else None,'quality':row['quality'] if row else None}
                 resolved.append(item)
             # Definitions from the index pages first, then those found elsewhere in the
             # books, readable ones before those with OCR damage; pages without one last.

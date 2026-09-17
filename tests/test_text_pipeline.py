@@ -131,6 +131,24 @@ class ReadingTextTests(unittest.TestCase):
                ('일단 9품사 체계로 보고1 위에서','일단 9 품사 체계로 보고 1 위에서','일단 9 품사 체계로 보고， 위에서')]
         for raw,display,want in cases:
             self.assertEqual(tidy_display(raw,display,self.terms)[0],want,raw)
+    def test_screen_text_round_three(self):
+        # 한국어표준문법 305쪽, 우리말문법론 130쪽.
+        from text_pipeline import tidy_display,correct_display,split_heading
+        shown=lambda raw,display,misread={}:correct_display(tidy_display(raw,display,self.terms,misread)[0])[0]
+        self.assertEqual(shown('성립하지 않으며，l7 보조 용언은 본용언의','성립하지 않으며，l7 보조 용언은 본용언의'),'성립하지 않으며, 보조 용언은 본용언의')
+        # A plain number after a comma is as often a list item.
+        self.assertEqual(shown('단원을 시작하며，2 생활 속에서','단원을 시작하며，2 생활 속에서'),'단원을 시작하며, 2 생활 속에서')
+        self.assertEqual(shown('논의는 박진호(1998)， 민현식(1999： 119-156)','논의는 박진 호(1998)， 민현식(1999：119-156)'),'논의는 박진호(1998), 민현식(1999:119-156)')
+        self.assertEqual(shown('특히굿맨(1970)이','특히 굿맨(1970)이'),'특히 굿맨(1970)이')
+        self.assertEqual(shown('것이다 15) 이런 점에서','것이다 15) 이런 점에서'),'것이다 이런 점에서')
+        self.assertEqual(shown('시간성， 통작성 등','시간성， 통 작성 등',{'통작성':'동작성'}),'시간성, 동작성 등')
+        # Not one word in the source: 부가가치는 제조업 is not 가치논제.
+        self.assertEqual(shown('부가가치는 제조업이','부가 가치는 제조업이',{'가치는제':'가치논제'}),'부가 가치는 제조업이')
+        body='\n국어의 보조용언은 시간성， 양태성， 통작성 등 다양한 의미를 나타낼 뿐 아\n니라 피동， 사동， 부정 등의 의미를 나타내기도 한다.'
+        for first,heading in [('7 보조용언의 의미 기능','7 보조용언의 의미 기능'),('2.4.1. 음운 현상의 정의와 분류 기준','2.4.1. 음운 현상의 정의와 분류 기준'),
+                              ('(325 가)는 접미사',''),('2 학년에서',''),('역으로 영상 서사를 감상한 후 그 것','')]:
+            raw=first+body
+            self.assertEqual(split_heading(raw,raw.replace('\n',' '))[0],heading,first)
     def test_terms_rejoin_only_where_the_source_had_no_space(self):
         from text_pipeline import tidy_display
         self.assertEqual(tidy_display('동격 관형사절과','동 격 관형 사절과',self.terms)[0],'동격 관형사절과')
@@ -140,6 +158,21 @@ class ReadingTextTests(unittest.TestCase):
         self.assertEqual(tidy_display('대화 참여자는','대화 참여자는',self.terms)[0],'대화 참여자는')
         # A two-syllable term only when split into two lone syllables.
         self.assertEqual(tidy_display('동격이다','동 격이다',self.terms)[0],'동 격이다')
+
+class DefinitionContextTests(unittest.TestCase):
+    def test_following_sentences_stay_on_the_term(self):
+        import sys;sys.path.insert(0,str(core.ROOT/'scripts'))
+        from build_term_index import with_context
+        s=lambda text,passage=1,skip=False,previous=None:{'kind':'body','text':text,'previous':previous,'passage':passage,'skip':skip}
+        sentences=[s('문장 안에서 서술어의 기능을 하는 용언을 본용언， 문법적인 의미를 더해 주는 용언을 보조 용언이라 한다.'),
+                   s('보조 용언만으로는 문장이 성립하지 않으며， 보조 용언은 본용언의 뒤에 와서 다양한 기능을 한다.'),
+                   s('빨간 장미꽃이 아름답다 하는 말은 단순한 진술에 불과하다.')]
+        quote,more=with_context(sentences,0,'보조용언')
+        self.assertIn('보조 용언만으로는',more);self.assertNotIn('장미꽃',more)
+        sentences[1]=s('이러한 보조 용언의 의미는 (3다)의 예에서 볼 수 있다.')
+        self.assertEqual(with_context(sentences,0,'보조용언')[1],'')
+        sentences[1]=s('보조 용언만으로는 문장이 성립하지 않는다.',passage=2)
+        self.assertEqual(with_context(sentences,0,'보조용언')[1],'')
 
 class DefinitionTests(unittest.TestCase):
     def test_definitions_outrank_mentions(self):
