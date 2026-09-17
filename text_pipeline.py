@@ -17,6 +17,105 @@ def restore_terms(text):
     return text
 def compact(text):return re.sub(r'\s+','',text).lower()
 
+# Superscript footnote references come out of the text layer as a stray syllable
+# or number glued to a sentence end (한다.쩌 (122)의, 있다46 남의, 구분한다 12
+# 단모음은), to a clause (나타나며70 격 조사) or to a heading
+# (관형사절을안은문장39). A comma after an ending is often read as 1 (있고1
+# 그것이). A glued syllable that really starts a sentence stays, and so does a
+# number that counts something (있다.1 연에서, 2 학년과, 9품사).
+SENTENCE_INITIAL=set('즉이그저또곧더왜꼭늘잘참좀못안한두세네첫새각몇약총단및전후본위표시예나너내제둘셋넷김박최와과는은를을가의로에고도만라자아오어음응다')
+# Words a number counts ("2 학년", "10 년", "3 인칭"): the number is not a footnote mark.
+COUNTED=re.compile(r'(?:부터|까지|내지|또는|및|이상|이하|미만|이내|년대|세기|번째|차시|개국|년|월|일|시|분|초|개|명|사람|권|쪽|면|장|절|항|조|편|부|차|회|번|등급|단계|가지|종류|음절|음보|자|글자|행|연|대|세|학년|학기|인칭|모음|자음|품사|퍼센트|배|점|마리|곳|줄|칸|단원|과|원)(?:이|가|은|는|을|를|의|에|에서|과|와|도|만|로|으로|부터|까지|씩|째|간|쯤|이나|나|이다|이며|이고|처럼|같이|만큼)?')
+def note_marks(raw):
+    """(start, end, replacement) for the footnote marks and misread commas in `raw`."""
+    marks={}
+    for m in re.finditer(r'(?<=[다요][.!?。])([가-힣]|\d{1,2})(?=[ \t]+(\S))',raw):
+        mark,after=m.group(1),m.group(2)
+        if mark in SENTENCE_INITIAL or (mark.isdigit() and after!='('):continue
+        marks[m.span(1)]=''
+    # The period was lost: "이끌어질 수도 있다46 남의 말이나", "구분한다 12 단모음은".
+    for m in re.finditer(r'(?<=[가-힣]다)[ \t]*(\d{1,2})(?=[ \t\n]+([가-힣]+))',raw):
+        if not COUNTED.fullmatch(m.group(2)):marks[m.span(1)]=''
+    # Glued to an ending or particle: a comma read as 1, otherwise a footnote mark.
+    for m in re.finditer(r'(?<=[가-힣][고로도데서만며면를을에는은와과써여해지요])(\d{1,2})(?=[ \t\n]+([가-힣]+))',raw):
+        if COUNTED.fullmatch(m.group(2)) or re.match(r'차(?:교육과정|개정|시)',m.group(2)):continue
+        marks.setdefault(m.span(1),'，' if m.group(1)=='1' and raw[m.start()-1] in '고로며면서데요' else '')
+    for m in re.finditer(r'^[ \t]*\d+(?:\.\d+)+\.?[ \t]*\S[^\n]*?[가-힣](\d{1,2})[ \t]*$',raw,re.M):marks[m.span(1)]=''
+    return [(a,b,r) for (a,b),r in sorted(marks.items())]
+
+def glyph_gaps(text):
+    """The non-space characters of `text`, the whitespace before each, and what trails."""
+    glyphs=[];gaps=[];gap=''
+    for ch in text:
+        if ch.isspace():gap+=ch
+        else:glyphs.append(ch);gaps.append(gap);gap=''
+    return ''.join(glyphs),gaps,gap
+
+def term_starts(text,gaps,raw_gaps,keys,longest,every=False):
+    """(position, term) for the longest term in `keys` beginning at each word
+    start, or for every such term, longest first, with `every`."""
+    for p,ch in enumerate(text):
+        if not '가'<=ch<='힣' or not (p==0 or gaps[p] or raw_gaps[p] or not '가'<=text[p-1]<='힣'):continue
+        for n in range(min(longest,len(text)-p),1,-1):
+            if text[p:p+n] in keys:
+                yield p,text[p:p+n]
+                if not every:break
+
+_joined={'stamp':None,'keys':frozenset(),'longest':0}
+def joined_terms():
+    """Index terms the books write without a space (scripts/build_term_index.py counts it)."""
+    from pathlib import Path
+    path=Path(__file__).resolve().parent/'data'/'term-index.json'
+    stamp=path.stat().st_mtime_ns if path.exists() else None
+    if stamp!=_joined['stamp']:
+        keys=frozenset(json.loads(path.read_text(encoding='utf-8')).get('joined',[])) if path.exists() else frozenset()
+        _joined.update(stamp=stamp,keys=keys,longest=max(map(len,keys),default=0))
+    return _joined['keys'],_joined['longest']
+
+# A lone syllable before a term-looking run is usually a word of its own:
+# 이 형태 is "this form", not 이형태.
+STANDALONE=SENTENCE_INITIAL|set('것수등때데뿐바중앞뒤속밑곳적줄채듯양만번개명권쪽장절말글책뜻법')
+def tidy_display(raw,display,terms=None):
+    """Reading text for the screen. Footnote marks are dropped; a term the books
+    write as one word is rejoined where the spacing model split it and the
+    source had no space (관 계절로 -> 관계절로, 동 격 -> 동격); example numbers
+    the OCR split are closed up ((1 23 가) -> (123가)). Returns (text, marks
+    dropped or commas restored). Excerpts, evidence and citations keep the source glyphs.
+    `terms` is (keys, longest) while the term index itself is being built."""
+    if not raw or not display or compact(raw)!=compact(display):return display,0
+    text,gaps,trailing=glyph_gaps(display)
+    raw_at=[i for i,ch in enumerate(raw) if not ch.isspace()]
+    raw_gaps=glyph_gaps(raw)[1]
+    at={pos:g for g,pos in enumerate(raw_at)}
+    spans=note_marks(raw)
+    marks={at[i]:(r if i==a else '') for a,b,r in spans for i in range(a,b) if i in at}
+    keys,longest=terms or joined_terms()
+    joined=set();done=0
+    for p,term in term_starts(text,gaps,raw_gaps,keys,longest) if keys else ():
+        # Only a run that starts a word on screen: 학문 태 준 is not 문태준 to rejoin.
+        if p<done or (p and not gaps[p] and '가'<=text[p-1]<='힣'):continue
+        end=p+len(term);inner=[q for q in range(p+1,end) if gaps[q]]
+        if not inner:done=end;continue
+        # The source itself spaced it, or the first syllable is a word of its own.
+        if any(re.search(r'[ \t]',raw_gaps[q]) for q in inner) or (gaps[p+1] and text[p] in STANDALONE):continue
+        # Two-syllable terms only when split into two lone syllables (동 격).
+        if len(term)==2 and end<len(text) and not gaps[end] and '가'<=text[end]<='힣':continue
+        joined.update(inner);done=end
+    out=[gaps[0]] if gaps else [];pending=''
+    for g,ch in enumerate(text):
+        gap='' if g in joined else gaps[g]
+        if g in marks:
+            # A restored comma sits on the word before it: "있고， 그것이".
+            if marks[g]:out.append(marks[g]);pending=''
+            else:pending=pending or gap
+            continue
+        # The space before a dropped mark still separates the words around it.
+        if len(out)>1:out.append(gap or pending)
+        out.append(ch);pending=''
+    shown=''.join(out)+trailing
+    shown=re.sub(r'\((\s*\d(?:\s*\d){1,3})\s*([가나다라마바사아자차카타파하]?[\'′]?)\s*\)',lambda m:'('+re.sub(r'\s','',m.group(1))+m.group(2)+')',shown)
+    return shown,len(spans)
+
 _corrections={'stamp':None,'words':{}}
 def corrections():
     """Display-only OCR corrections accepted by scripts/audit_glyphs.py (whole words, same length)."""

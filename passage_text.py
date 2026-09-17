@@ -9,6 +9,21 @@ def noise(text):
     c=compact(text)
     return len(re.findall(r'[가-힣][A-Za-z%&@]{1,3}[가-힣]|[가-힣][0-9][}\-]|[가-힣][0-9]{3,}|[가-힣][λ}]|[0-9]π|[a-zA-Z]\)\x27|[-~]{4,}',c))+len(FOREIGN.findall(c))+int(bool(re.match(r'^[;:，]',c)))
 
+def ocr_damage(text):
+    """Kinds of OCR damage still visible in a reading sentence that noise()
+    lets through: jamo read as Latin letters (‘ L ’이 ‘ E ’로), a stray digit
+    between words, a stray symbol, a long run with no spaces, Hangul inside a
+    Hanja gloss (설면(좀面))."""
+    kinds=[]
+    plain=re.sub(r'\([^)]*[A-Za-z]{2,}[^)]*\)','',text)
+    if re.search(r'(?<![A-Za-z\-/])[A-Z](?![A-Za-z])',plain):kinds.append('letter')
+    from text_pipeline import COUNTED
+    if any(not COUNTED.fullmatch(m.group(1)) for m in re.finditer(r'[가-힣]\s\d{1,2}\s([가-힣]+)',plain)):kinds.append('digit')
+    if re.search(r'^[%$#@&*|]|[가-힣][%&@|][가-힣]',text):kinds.append('symbol')
+    if re.search(r'[가-힣]{18,}',text):kinds.append('unspaced')
+    if re.search(r'[\u4e00-\u9fff][가-힣]|[가-힣][\u4e00-\u9fff]',text):kinds.append('hanja')
+    return kinds
+
 def suspect_segments(display):
     """Split reading text into sentences, marking those with visible OCR damage.
     Nothing is removed: the reader sees the whole paragraph with doubtful

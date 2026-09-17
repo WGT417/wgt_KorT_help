@@ -133,21 +133,31 @@ function renderConcepts(concepts){
     }
 }
 function renderTerms(terms){
-    // Straight from the books' back-of-book indexes: every book that lists the term, its page, and the sentence there that names it.
+    // Straight from the books' back-of-book indexes: the sentences that define or explain the term (definitions first), then the other pages that list it.
     const target=$('#concepts');
     for(const term of terms||[]){
         const card=el('article',undefined,'concept-card term-card');
         const head=el('div',undefined,'concept-head');head.append(el('span','찾아보기','badge'),el('h3',term.label));
-        const books=new Set(term.sources.map(s=>s.book)).size;head.append(el('span',`개론서 ${books}권 · ${term.sources.length}쪽 · AI 미사용`,'concept-parent'));card.append(head);
+        const books=new Set(term.sources.map(s=>s.book)).size,defined=term.sources.filter(s=>s.quote).length;head.append(el('span',`개론서 ${books}권 · 정의 ${defined}곳 · AI 미사용`,'concept-parent'));card.append(head);
         if(term.variants.length>1)card.append(el('p','표기: '+term.variants.join(' · '),'small muted'));
-        const list=el('div',undefined,'term-sources');
-        for(const s of term.sources){
-            const row=el('div',undefined,'term-source');
-            row.append(conceptSourceButton(s));
-            row.append(el('p',s.quote||'이 쪽에서 용어를 정의하는 문장을 따로 찾지 못했습니다. 쪽을 열어 확인하세요.',s.quote?'term-quote':'term-quote muted'));
-            list.append(row);
+        const quoted=term.sources.filter(s=>s.quote),others=term.sources.filter(s=>!s.quote);
+        if(quoted.length){
+            const list=el('div',undefined,'term-sources');
+            for(const s of quoted){
+                const row=el('div',undefined,'term-source');row.append(conceptSourceButton(s));
+                if(!s.indexed)row.append(el('span','찾아보기 밖','term-tag'));
+                if(s.ocr)row.append(el('span','오인식 있음','term-tag warn'));
+                row.append(el('p',s.quote,'term-quote'));list.append(row);
+            }
+            card.append(list);
         }
-        card.append(list);target.append(card);
+        // Pages that only mention the term get one line of page buttons, not a row each.
+        if(others.length){
+            const more=el('div',undefined,'term-more');more.append(el('span',quoted.length?'이 용어가 나오는 다른 쪽':'이 용어가 나오는 쪽','small muted'));
+            for(const s of others)more.append(conceptSourceButton(s));
+            card.append(more);
+        }
+        target.append(card);
     }
 }
 function renderResults(data){

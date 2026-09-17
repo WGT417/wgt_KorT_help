@@ -187,6 +187,23 @@ class TermIndexTests(unittest.TestCase):
         self.assertEqual(match_terms('zxqv 없는 용어','문법'),[])
         # A word inside a longer term does not match the longer term's neighbours by substring.
         self.assertTrue(all(h['key']!='대명사' for h in match_terms('재귀대명사','문법')))
+    def test_term_card_leads_with_the_books_definitions(self):
+        from term_index import match_terms
+        card=match_terms('관형절','문법')[0]
+        pages=[(s['book'],s['pdf_page']) for s in card['sources']]
+        self.assertEqual(len(pages),len(set(pages)))
+        first=card['sources'][0];self.assertTrue(first['definition'] and first['quote'])
+        # 한국어문법총론 1, 265쪽 defines it; the page is listed once although both names index it.
+        page=next(s for s in card['sources'] if s['book']=='한국어문법총론 1' and s['printed_page']==265)
+        self.assertIn('관형사절이라고 부른다',page['quote'])
+        # Pages that define come before pages that only mention the term.
+        flags=[(s['definition'],bool(s['quote'])) for s in card['sources']]
+        self.assertEqual(flags,sorted(flags,reverse=True))
+        self.assertFalse(any('쩌' in (s['quote'] or '') for s in card['sources']))
+    def test_index_page_numbers_survive_look_alike_letters(self):
+        import sys;sys.path.insert(0,str(core.ROOT/'scripts'))
+        from build_term_index import entries
+        self.assertEqual(list(entries('명사구    Z73, 321\n명사형 어미     17l, 176')),[('명사구',[273,321]),('명사형 어미',[171,176])])
 
 class QuotaTests(unittest.TestCase):
     def test_memory_quota_counts_and_refunds(self):

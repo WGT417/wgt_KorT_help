@@ -99,3 +99,78 @@ class GlyphRepairTests(unittest.TestCase):
         segs=suspect_segments('소설의 시점은 화자의 위치에 따라 달라진다. 화자가 이 ψΙ 속에서 어떤 위치를 차지하는가를 구별하는 것이 중요하다.')
         self.assertEqual([s['suspect'] for s in segs],[False,True])
         self.assertIn('ψ',segs[1]['text'])
+
+class ReadingTextTests(unittest.TestCase):
+    # 한국어문법총론 1, 265쪽: a footnote mark read as 쩌, and the spacing model splitting 관계절.
+    terms=(frozenset({'관계절','관형사절','동격','이형태','대화참여자'}),5)
+    def test_footnote_mark_after_a_sentence_is_dropped(self):
+        from text_pipeline import tidy_display
+        raw='각각 동격절， 관계절로 줄여 이르기도 한다.쩌 (1 22)의 밑줄 부분'
+        display='각각 동격 절， 관 계절로 줄여 이르기도한다. 쩌 (1 22)의 밑줄 부분'
+        text,marks=tidy_display(raw,display,self.terms)
+        self.assertEqual(marks,1)
+        self.assertEqual(text,'각각 동격 절， 관계절로 줄여 이르기도한다. (122)의 밑줄 부분')
+    def test_heading_footnote_number_is_dropped(self):
+        from text_pipeline import tidy_display
+        text,marks=tidy_display('4.3.3.2. 관형사절을안은문장39\n절이 관형사화되어','4.3.3.2. 관형사절을 안은 문장 39 절이 관형사화되어',self.terms)
+        self.assertEqual((text,marks),('4.3.3.2. 관형사절을 안은 문장 절이 관형사화되어',1))
+    def test_words_and_counts_after_a_sentence_stay(self):
+        from text_pipeline import tidy_display
+        for raw in ['차이가 있다.즉 두 가지로 나뉜다.','시를 살펴보았다.1 연에서 화자는','경우가 있다.13 (8바)처럼']:
+            text,marks=tidy_display(raw,raw.replace('.','. '),self.terms)
+            self.assertEqual(marks,raw.endswith('처럼'),raw)
+    def test_period_less_footnote_numbers_and_misread_commas(self):
+        from text_pipeline import tidy_display
+        cases=[('이끌어질 수도 있다46 남의 말이나','이끌어질 수도 있다 46 남의 말이나','이끌어질 수도 있다 남의 말이나'),
+               ('모음을 구분한다 12 단모음은','모음을 구분한다 12 단모음은','모음을 구분한다 단모음은'),
+               ('격 조사에서 나타나며70 격 조사 중에서도','격조사에서 나타나며 70 격조사 중에서도','격조사에서 나타나며 격조사 중에서도'),
+               ('불러일으킬 수 있고1 그것이 목숨을','불러일으킬 수 있고 1 그것이 목숨을','불러일으킬 수 있고， 그것이 목숨을'),
+               # Numbers that count something stay.
+               ('발달 수준은 비슷하다 2 학년과 3학년','발달 수준은 비슷하다 2 학년과 3학년','발달 수준은 비슷하다 2 학년과 3학년'),
+               ('수식한다면2 번처럼 표현하여','수식한다면 2 번처럼 표현하여','수식한다면 2 번처럼 표현하여'),
+               ('일단 9품사 체계로 보고1 위에서','일단 9 품사 체계로 보고 1 위에서','일단 9 품사 체계로 보고， 위에서')]
+        for raw,display,want in cases:
+            self.assertEqual(tidy_display(raw,display,self.terms)[0],want,raw)
+    def test_terms_rejoin_only_where_the_source_had_no_space(self):
+        from text_pipeline import tidy_display
+        self.assertEqual(tidy_display('동격 관형사절과','동 격 관형 사절과',self.terms)[0],'동격 관형사절과')
+        # The book itself spaced these: "this form", "the conversation's participants".
+        self.assertEqual(tidy_display('이 형태는','이 형태는',self.terms)[0],'이 형태는')
+        self.assertEqual(tidy_display('이형태는','이 형태는',self.terms)[0],'이 형태는')
+        self.assertEqual(tidy_display('대화 참여자는','대화 참여자는',self.terms)[0],'대화 참여자는')
+        # A two-syllable term only when split into two lone syllables.
+        self.assertEqual(tidy_display('동격이다','동 격이다',self.terms)[0],'동 격이다')
+
+class DefinitionTests(unittest.TestCase):
+    def test_definitions_outrank_mentions(self):
+        from term_index import definition_score
+        longer=['동격관형사절','관계관형사절']
+        score=lambda s:definition_score(s,'관형사절',longer)
+        self.assertEqual(score('절이 관형사화되어 관형어로서 쓰이게 되면 그 절을 관형사절이라고 부른다.'),10)
+        self.assertEqual(score('관형사절은 용언 어간에 관형사형 어미가 붙어서 관형어로 쓰일 수 있는 절이다.'),7)
+        self.assertEqual(score('일반적으로 관형사절은 동격 관형사절과 관계 관형사절로 분류된다.'),5)
+        # Defines 동격 관형사절, not 관형사절.
+        self.assertEqual(score('동격 관형사절이란 한 문장의 모든 필수 성분을 완전하게 갖추고 있는 관형사절이다.'),2)
+        self.assertEqual(score('우리 책에서도 ‘넓은’을 관형사절로 다룬다.'),1)
+        self.assertEqual(score('명사절은 명사화되어 명사가 쓰일 수 있는 자리에 오는 절이다.'),0)
+    def test_shapes_found_by_reading_the_whole_library(self):
+        # Each case is a sentence from the books that an earlier rule got wrong.
+        from term_index import definition_score as score
+        cases=[('이 때 발생하는 것이 ‘대화 함축’이다.','대화함축',9),
+               ('대화 함축이란 협력하고 있다고 가정할 때 발생하는 숨겨진 의미이다(오주영，1997 ; 구현정，2001).','대화함축',10),
+               ('위의 네 가지 격률 가운데 첫 번째 양의 격률은 필요한 만큼만 정보를 제공하라는 것이다.','양의격률',7),
+               ('현시적 교수법은 명확한 행동적 목표를 기반으로 하는 교사 중심 지도법을 일 걷는다.','현시적교수법',9),
+               ('평서형， 의문형， 명령형， 청유형， 감탄형을 묶어서 ‘종결형’ 이라고 하며 나머지는 비종결형이라고 한다.','종결형',10),
+               # Not definitions of the term.
+               ('가장 긴 드라마는 연속극이며， 가장 짧은 드라마는 단막극이다.','드라마',1),
+               ('심리학적 기능이란 시인과 독자 사이의 관계에 작용한다.','심리학적기능',5),
+               ('내리 쓰기 전략은 개요 짜기의 결과물을 보면서 하는 것이 일반적이다.','내리쓰기전략',5),
+               ('현대 국어에서 두음 법칙이라고 부르는 현상이 왜 발생했는지는 설명하기 어렵다.','두음법칙',1),
+               ('이것을 음소 분석이라고 부른다.','분석',1),
+               ('문장 자체의 변화를 통해 부각하는 표현을 강조의 방법이라 한다.','방법',1),
+               ('‘-가’， ‘-고’가 보조사라고 한다고 해서 문제가 해결되는 것은 아니다.','보조사',1),
+               ('그러므로 이는 ‘모절(안은절)’이라고 불러야 한다.','모절',1),
+               ('아리스토텔레스는 『시학』에서 예술가는 행동하는 인간을 모방한다고 말한다.','아리스토텔레스',5),
+               ('소설을 가르치는 과정에서는 이야기의 뜻을 찾아가는 작업이 이루어지기 때문이다.','에서',1)]
+        for sentence,key,want in cases:
+            self.assertEqual(score(sentence,key),want,sentence)
