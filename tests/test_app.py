@@ -34,9 +34,9 @@ class RetrievalTests(unittest.TestCase):
         self.assertTrue(all(r['category']=='문법' for r in rows))
         self.assertTrue(all('피동' in core.normalized(r['excerpt']) and '사동' in core.normalized(r['excerpt']) for r in rows))
     def test_routing_and_no_result(self):
-        self.assertFalse(core.route_question('피동과 사동의 차이','search')[0])
-        self.assertTrue(core.route_question('심미적 독서는 문학 작품 읽기인가?','auto')[0])
-        self.assertFalse(core.route_question('자유간접화법','auto')[0])
+        # Two modes, chosen by the visitor: the question text never decides.
+        self.assertFalse(core.route_question('search')[0])
+        self.assertTrue(core.route_question('reason')[0])
         self.assertEqual(core.search_pages('zxqvnonexistent98765','문학'),[])
     def test_generated_citations_fail_closed(self):
         sources=core.search_pages('피동 사동','문법')
@@ -112,7 +112,7 @@ class HTTPTests(unittest.TestCase):
             call.assert_not_called();self.assertFalse(data['ai_used']);self.assertGreater(len(data['sources']),0)
     def test_no_key_graceful_fallback(self):
         with patch.object(server,'API_KEY',''):
-            with self.request('/api/ask',{'question':'심미적 독서인가?','category':'문식성','mode':'auto'}) as r:data=json.load(r)
+            with self.request('/api/ask',{'question':'심미적 독서인가?','category':'문식성','mode':'reason'}) as r:data=json.load(r)
             self.assertFalse(data['ai_used']);self.assertIn('키',data['notice'])
     def test_reason_pipeline_returns_sections_and_cited_table(self):
         source=core.search_pages('어미의 종류에 대해 설명해줘','문법')[0]
@@ -206,27 +206,17 @@ class TermIndexTests(unittest.TestCase):
         self.assertEqual(list(entries('명사구    Z73, 321\n명사형 어미     17l, 176')),[('명사구',[273,321]),('명사형 어미',[171,176])])
 
 class QuotaTests(unittest.TestCase):
-    def test_memory_quota_counts_and_refunds(self):
+    def test_memory_quota_counts_the_day_and_refunds(self):
         import quota
         q=quota.MemoryQuota()
-        with patch.object(quota,'LIMITS',(3,15,300)):
-            self.assertEqual(q.peek('d','v','ip'),3)
-            results=[q.consume('d','v','ip') for _ in range(4)]
+        with patch.object(quota,'LIMIT',3):
+            self.assertEqual(q.peek('d'),3)
+            results=[q.consume('d') for _ in range(4)]
             self.assertEqual([ok for ok,_ in results],[True,True,True,False])
             self.assertEqual([left for _,left in results],[2,1,0,0])
-            q.refund('d','v','ip');self.assertEqual(q.peek('d','v','ip'),1)
-            # Another visitor on the same IP is limited by the IP bucket, not the visitor's.
-            self.assertTrue(q.consume('d','other','ip')[0])
+            q.refund('d');self.assertEqual(q.peek('d'),1)
             # A new day starts fresh.
-            self.assertEqual(q.peek('e','v','ip'),3)
-    def test_ip_and_daily_buckets_cap_everyone(self):
-        import quota
-        q=quota.MemoryQuota()
-        with patch.object(quota,'LIMITS',(3,2,300)):
-            self.assertTrue(q.consume('d','a','ip')[0]);self.assertTrue(q.consume('d','b','ip')[0])
-            self.assertFalse(q.consume('d','c','ip')[0])
-        with patch.object(quota,'LIMITS',(3,15,1)):  # a fresh day so the daily bucket starts at zero
-            self.assertTrue(q.consume('e','x','ip1')[0]);self.assertFalse(q.consume('e','y','ip2')[0])
+            self.assertEqual(q.peek('e'),3)
 
 class PublicModeTests(unittest.TestCase):
     @classmethod
@@ -239,26 +229,22 @@ class PublicModeTests(unittest.TestCase):
     def tearDownClass(cls):cls.http.shutdown();cls.http.server_close();server.PORT=cls.old_port
     def setUp(self):
         import quota
-        self.cookie=''
         patches=[patch.object(server,'PUBLIC',True),patch.object(server,'ADMIN_TOKEN','test-admin-token'),patch.object(server,'QUOTA',quota.MemoryQuota()),
                  patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key:s),patch.object(server,'reason',return_value={'title':'mock'}),
-                 patch.object(quota,'LIMITS',(3,15,300))]
+                 patch.object(quota,'LIMIT',3)]
         for p in patches:p.start();self.addCleanup(p.stop)
-    def request(self,path,body=None,headers=None,keep_cookie=True):
+    def request(self,path,body=None,headers=None):
         h={'Origin':'https://kor-teacher.web.app','X-Forwarded-Host':'kor-teacher.web.app','X-CSRF-Token':server.CSRF,'Content-Type':'application/json'}
-        if self.cookie and keep_cookie:h['Cookie']=self.cookie
         if headers:h.update(headers)
-        response=urlopen(Request(self.base+path,data=json.dumps(body).encode() if body is not None else None,headers=h),timeout=20)
-        set_cookie=response.headers.get('Set-Cookie')
-        if set_cookie and keep_cookie:self.cookie=set_cookie.split(';')[0]
-        return response
+        return urlopen(Request(self.base+path,data=json.dumps(body).encode() if body is not None else None,headers=h),timeout=60)  # a cold vector search can take tens of seconds
     def ask(self,**headers):
         with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'reason'},headers or None) as r:return json.load(r)
-    def test_visitor_gets_three_explanations_per_day_and_cookie(self):
-        with self.request('/api/status') as r:status=json.load(r)
+    def test_everyone_shares_one_daily_pool_and_no_cookie_is_set(self):
+        with self.request('/api/status') as r:
+            status=json.load(r);self.assertIsNone(r.headers.get('Set-Cookie'))
         self.assertTrue(status['public']);self.assertFalse(status['admin']);self.assertEqual(status['quota'],{'limit':3,'remaining':3})
-        self.assertTrue(self.cookie.startswith('__session='))
-        results=[self.ask() for _ in range(4)]
+        # Separate visitors, each with their own cookie: the count still runs down together.
+        results=[self.ask(Cookie=f'__session=visitor{n}') for n in range(4)]
         self.assertEqual([d['ai_used'] for d in results],[True,True,True,False])
         self.assertEqual([d['quota']['remaining'] for d in results],[2,1,0,0])
         self.assertIn('3회',results[3]['notice']);self.assertGreater(len(results[3]['sources']),0)

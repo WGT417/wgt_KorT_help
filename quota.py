@@ -1,9 +1,9 @@
 """Daily AI-explanation quota for the public deployment.
 
-Three buckets are counted per Korean calendar day: the visitor cookie, the
-client IP, and the whole server. A request is allowed only when every bucket
-is under its limit. The admin (X-Admin-Token) bypasses all of this in
-server.py, so nothing here ever sees admin traffic.
+One bucket per Korean calendar day: the whole server. Everyone draws from the
+same pool, so nothing is counted per visitor and the site sets no cookie for
+this. The admin (X-Admin-Token) bypasses all of it in server.py, so nothing
+here ever sees admin traffic.
 
 Backends:
   none      - no counting (local desktop use)
@@ -15,25 +15,22 @@ Backends:
 import os, threading, datetime
 
 KST = datetime.timezone(datetime.timedelta(hours=9))
-LIMITS = (int(os.environ.get('DAILY_PER_VISITOR', '3')),
-          int(os.environ.get('DAILY_PER_IP', '15')),
-          int(os.environ.get('DAILY_TOTAL', '300')))
-LABELS = ('visitor', 'ip', 'daily')
+LIMIT = int(os.environ.get('DAILY_TOTAL', '100'))
 
 
 def today():
     return datetime.datetime.now(KST).strftime('%Y-%m-%d')
 
 
-def _remaining(counts):
-    return max(0, min(limit - count for limit, count in zip(LIMITS, counts)))
+def _remaining(count):
+    return max(0, LIMIT - count)
 
 
 class NoQuota:
     name = 'none'
-    def peek(self, day, visitor, ip): return None
-    def consume(self, day, visitor, ip): return True, None
-    def refund(self, day, visitor, ip): pass
+    def peek(self, day): return None
+    def consume(self, day): return True, None
+    def refund(self, day): pass
 
 
 class MemoryQuota:
@@ -41,23 +38,19 @@ class MemoryQuota:
     def __init__(self):
         self.counts = {}
         self.lock = threading.Lock()
-    def _keys(self, day, visitor, ip):
-        return [(day, 'visitor', visitor), (day, 'ip', ip), (day, 'daily', '')]
-    def peek(self, day, visitor, ip):
+    def peek(self, day):
         with self.lock:
-            return _remaining([self.counts.get(k, 0) for k in self._keys(day, visitor, ip)])
-    def consume(self, day, visitor, ip):
-        keys = self._keys(day, visitor, ip)
+            return _remaining(self.counts.get(day, 0))
+    def consume(self, day):
         with self.lock:
-            counts = [self.counts.get(k, 0) for k in keys]
-            if any(c >= l for c, l in zip(counts, LIMITS)):
-                return False, _remaining(counts)
-            for k in keys: self.counts[k] = self.counts.get(k, 0) + 1
-            return True, _remaining([c + 1 for c in counts])
-    def refund(self, day, visitor, ip):
+            count = self.counts.get(day, 0)
+            if count >= LIMIT:
+                return False, 0
+            self.counts[day] = count + 1
+            return True, _remaining(count + 1)
+    def refund(self, day):
         with self.lock:
-            for k in self._keys(day, visitor, ip):
-                if self.counts.get(k, 0) > 0: self.counts[k] -= 1
+            if self.counts.get(day, 0) > 0: self.counts[day] -= 1
 
 
 class FirestoreQuota:
@@ -66,38 +59,34 @@ class FirestoreQuota:
         from google.cloud import firestore  # imported lazily: not installed for local use
         self.firestore = firestore
         self.db = firestore.Client()
-    def _refs(self, day, visitor, ip):
-        return [self.db.document('quota_visitor', f'{day}_{visitor}'),
-                self.db.document('quota_ip', f'{day}_{ip}'),
-                self.db.document('quota_daily', day)]
+    def _ref(self, day):
+        return self.db.document('quota_daily', day)
     @staticmethod
     def _count(snapshot):
         return (snapshot.to_dict() or {}).get('count', 0) if snapshot.exists else 0
-    def peek(self, day, visitor, ip):
-        return _remaining([self._count(ref.get()) for ref in self._refs(day, visitor, ip)])
-    def consume(self, day, visitor, ip):
-        refs = self._refs(day, visitor, ip)
+    def peek(self, day):
+        return _remaining(self._count(self._ref(day).get()))
+    def consume(self, day):
+        ref = self._ref(day)
         firestore = self.firestore
-        # Documents carry an `expires` timestamp so a Firestore TTL policy on
+        # The document carries an `expires` timestamp so a Firestore TTL policy on
         # that field can sweep old days automatically; nothing reads it.
         expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3)
         @firestore.transactional
         def run(tx):
-            counts = [self._count(ref.get(transaction=tx)) for ref in refs]
-            if any(c >= l for c, l in zip(counts, LIMITS)):
-                return False, _remaining(counts)
-            for ref, count in zip(refs, counts):
-                tx.set(ref, {'count': count + 1, 'updated': firestore.SERVER_TIMESTAMP, 'expires': expires}, merge=True)
-            return True, _remaining([c + 1 for c in counts])
+            count = self._count(ref.get(transaction=tx))
+            if count >= LIMIT:
+                return False, 0
+            tx.set(ref, {'count': count + 1, 'updated': firestore.SERVER_TIMESTAMP, 'expires': expires}, merge=True)
+            return True, _remaining(count + 1)
         return run(self.db.transaction())
-    def refund(self, day, visitor, ip):
-        refs = self._refs(day, visitor, ip)
+    def refund(self, day):
+        ref = self._ref(day)
         firestore = self.firestore
         @firestore.transactional
         def run(tx):
-            counts = [self._count(ref.get(transaction=tx)) for ref in refs]
-            for ref, count in zip(refs, counts):
-                if count > 0: tx.set(ref, {'count': count - 1}, merge=True)
+            count = self._count(ref.get(transaction=tx))
+            if count > 0: tx.set(ref, {'count': count - 1}, merge=True)
         run(self.db.transaction())
 
 

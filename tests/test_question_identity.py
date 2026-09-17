@@ -15,7 +15,6 @@ class QuestionIdentityTests(unittest.TestCase):
         self.assertNotIn('독독자가',core.normalized(rows[0]['display_excerpt']))
         self.assertTrue(all('비상교과서' not in r['display_excerpt'] and '지학사' not in r['display_excerpt'] for r in rows))
         self.assertTrue(all('작문' not in r['title'] for r in rows))
-        self.assertTrue(core.route_question('능동적으로 읽기에 대해 알려줘','auto')[0])
     def test_retired_preview_never_returns_canned_answer(self):
         http=ThreadingHTTPServer(('127.0.0.1',0),Preview)
         threading.Thread(target=http.serve_forever,daemon=True).start()

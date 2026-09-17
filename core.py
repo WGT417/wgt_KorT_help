@@ -107,10 +107,8 @@ def search_pages(query,category='전체',book_id='',limit=8):
     with connect() as db:
         return retrieve(db,query,category,book_id,limit)
 
-def route_question(query,mode):
-    if mode=='search':return False,'직접 선택한 원문 검색입니다. OpenAI API를 호출하지 않습니다.'
-    if mode=='reason':return True,'직접 선택한 근거 기반 해설입니다.'
-    patterns=r'차이|비교|왜|이유|적용|수업|예시|관계|같은|다른|인가|일까|맞[나요는]|볼 수|의미하|구분|해석|설명|알려'
-    reasoning=bool(re.search(patterns,query))
-    return reasoning,('개념 판단·비교·적용을 묻는 표현이 있어 해설이 필요하다고 판단했습니다.' if reasoning else '용어와 관련 원문을 찾는 질문으로 판단했습니다. OpenAI API를 호출하지 않습니다.')
+def route_question(mode):
+    """The visitor chooses outright; nothing here guesses at the question."""
+    if mode=='reason':return True,'AI 활용 해설입니다. 찾은 원문을 근거로 설명합니다.'
+    return False,'원문 검색입니다. OpenAI API를 호출하지 않습니다.'
 

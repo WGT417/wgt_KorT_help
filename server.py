@@ -87,39 +87,29 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type',kind)
         self.send_header('Content-Length',str(len(body)))
         self.headers_safe()
-        for cookie in getattr(self,'cookies',()):self.send_header('Set-Cookie',cookie)
         self.end_headers();self.wfile.write(body)
     def is_admin(self):
         return bool(ADMIN_TOKEN) and secrets.compare_digest(self.headers.get('X-Admin-Token',''),ADMIN_TOKEN)
-    def client_ip(self):
-        # Behind Firebase Hosting / Cloud Run the first X-Forwarded-For entry is the
-        # visitor. It is a soft signal (the per-IP bucket), never a security boundary.
-        forwarded=self.headers.get('X-Forwarded-For','') if PUBLIC else ''
-        return (forwarded.split(',')[0].strip() or self.client_address[0])[:64]
-    def visitor_id(self):
-        cookies=dict(part.strip().split('=',1) for part in self.headers.get('Cookie','').split(';') if '=' in part)
-        token=cookies.get('__session','')  # Firebase Hosting only forwards a cookie named __session
-        if not re.fullmatch(r'[A-Za-z0-9_\-]{16,64}',token):
-            token=secrets.token_urlsafe(24)
-            self.cookies=[f'__session={token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax'+('; Secure' if PUBLIC else '')]
-        return token
     def quota_state(self,consume=False):
-        """Return the quota dict for the response; (allowed, state) when consuming."""
+        """Return the quota dict for the response; (allowed, state) when consuming.
+
+        The pool is one shared day's budget for the whole server, so the request
+        itself tells us nothing: no cookie, no IP, no per-person share.
+        """
         if self.is_admin():return (True,{'admin':True}) if consume else {'admin':True}
         if QUOTA is None:return (False,{'unavailable':True}) if consume else {'unavailable':True}
         if QUOTA.name=='none':return (True,{'unlimited':True}) if consume else {'unlimited':True}
-        day,visitor,ip=quota.today(),self.visitor_id(),self.client_ip()
         try:
             if consume:
-                ok,remaining=QUOTA.consume(day,visitor,ip)
-                return ok,{'limit':quota.LIMITS[0],'remaining':remaining}
-            return {'limit':quota.LIMITS[0],'remaining':QUOTA.peek(day,visitor,ip)}
+                ok,remaining=QUOTA.consume(quota.today())
+                return ok,{'limit':quota.LIMIT,'remaining':remaining}
+            return {'limit':quota.LIMIT,'remaining':QUOTA.peek(quota.today())}
         except Exception as error:
             print(f'quota error: {error}',flush=True)
             return (False,{'unavailable':True}) if consume else {'unavailable':True}
     def quota_refund(self):
         if self.is_admin() or QUOTA is None:return
-        try:QUOTA.refund(quota.today(),self.visitor_id(),self.client_ip())
+        try:QUOTA.refund(quota.today())
         except Exception as error:print(f'quota refund error: {error}',flush=True)
     def headers_safe(self):
         self.send_header('Cache-Control','no-store')
@@ -185,10 +175,10 @@ class Handler(BaseHTTPRequestHandler):
                 API_KEY=key
                 return self.send(200,{'configured':bool(API_KEY),'message':'이 컴퓨터에 키를 저장했습니다. 다음 실행부터 자동 연결됩니다.' if API_KEY else '연결을 해제하고 이 앱에 저장한 키를 삭제했습니다.'})
             if path=='/api/ask':
-                query=body.get('question','');category=body.get('category','문식성');mode=body.get('mode','auto');bid=''
+                query=body.get('question','');category=body.get('category','문식성');mode=body.get('mode','search');bid=''
                 if not isinstance(query,str) or not 2<=len(query.strip())<=1000:return self.send(400,{'error':'질문을 2~1,000자로 입력해 주세요.'})
-                if category not in {'전체','문식성','문법','문학'} or mode not in {'auto','search','reason'}:return self.send(400,{'error':'검색 조건을 확인해 주세요.'})
-                use_ai,why=route_question(query,mode);sources=search_pages(query,category,bid)
+                if category not in {'전체','문식성','문법','문학'} or mode not in {'search','reason'}:return self.send(400,{'error':'검색 조건을 확인해 주세요.'})
+                use_ai,why=route_question(mode);sources=search_pages(query,category,bid)
                 from concepts import match_concepts
                 from term_index import match_terms
                 concepts=match_concepts(query,category);terms=match_terms(query,category)
@@ -206,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                         allowed,state=self.quota_state(consume=True);result['quota']=state
                         if not allowed:
                             result['notice']=('지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 중단했습니다. 원문 검색과 개념 정리는 계속 이용할 수 있습니다.' if state.get('unavailable')
-                                else f"오늘의 AI 해설 {quota.LIMITS[0]}회를 모두 사용했습니다. 자정 이후 다시 이용할 수 있으며, 원문 검색과 개념 정리는 계속 볼 수 있습니다.")
+                                else f"오늘 서재 전체에 열어 둔 AI 해설 {quota.LIMIT}회를 모두 사용했습니다. 한국 시각 자정에 다시 채워지며, 원문 검색과 개념 정리는 계속 볼 수 있습니다.")
                         else:
                             try:
                                 sources=collect_evidence(query,category,sources,openai_call,API_KEY)
