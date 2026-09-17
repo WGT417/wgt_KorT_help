@@ -4,7 +4,7 @@
   "service": "kor-teacher",
   "bucket": "",
   "repository": "kor-teacher",
-  "memory": "2Gi",
+  "memory": "4Gi",
   "cpu": "1",
   "max_instances": 1,
   "min_instances": 0,

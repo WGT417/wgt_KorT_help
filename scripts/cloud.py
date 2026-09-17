@@ -20,7 +20,10 @@ CONFIG = ROOT / 'deploy.json'
 # Never synced: SQLite side files, temporary extraction folders, audit screenshots,
 # unfinished downloads, and the full-precision BGE-M3 model (2.3GB) that only
 # builds the vector index; the server answers queries with the int8 model.
-SYNC_EXCLUDE = r'(^|/)(tmp[^/]*|.*\.sqlite3-(wal|shm)|.*\.png|.*\.download|bge-m3/model\.onnx(_data)?)$'
+# gcloud applies re.match to the relative path (backslashes on Windows), so every
+# alternative may follow any leading folders. No leading ^: gcloud reads ^X^ at the
+# start of a list argument as a custom delimiter and splits the pattern.
+SYNC_EXCLUDE = r'(.*[/\\])?(tmp[^/\\]*([/\\].*)?|.*\.sqlite3-(wal|shm)|.*\.png|.*\.download|bge-m3[/\\]model\.onnx(_data)?)$'
 
 
 def load_config():
