@@ -157,8 +157,10 @@ class ConceptTests(unittest.TestCase):
         # A category filter hides concepts of other areas.
         self.assertEqual(match_concepts('SQ3R','문법'),[])
     def test_concept_files_pass_checker(self):
-        import subprocess
-        result=subprocess.run([sys.executable,str(Path(__file__).resolve().parents[1]/'scripts'/'check_concepts.py')],capture_output=True,text=True,encoding='utf-8')
+        import subprocess, os
+        # Windows에서는 자식이 콘솔 코드페이지(cp949)로 한글을 내보내 utf-8 디코딩이 깨진다.
+        env={**os.environ,'PYTHONIOENCODING':'utf-8'}
+        result=subprocess.run([sys.executable,str(Path(__file__).resolve().parents[1]/'scripts'/'check_concepts.py')],capture_output=True,text=True,encoding='utf-8',env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 
 class ConceptPrecisionTests(unittest.TestCase):
