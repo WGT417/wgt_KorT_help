@@ -15,7 +15,7 @@ from pathlib import Path
 from collections import Counter,defaultdict
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import core
-from text_pipeline import compact,restore_terms,tidy_display,glyph_gaps,term_starts,split_heading,SENTENCE_INITIAL,VERSION
+from text_pipeline import compact,restore_terms,tidy_display,glyph_gaps,term_starts,split_heading,SENTENCE_INITIAL,TERMS,VERSION
 from passage_text import SENTENCE_END,noise,ocr_damage
 from term_index import definition_score,DEFINITION
 
@@ -174,46 +174,95 @@ def library_definitions(db,terms,cache,joined,misread,longer):
 CONFUSED=({frozenset(p) for p in [(11,6),(16,3),(5,16),(0,3)]},
           {frozenset(p) for p in [(20,0),(20,4),(0,4),(6,4),(13,18),(2,4),(11,9),(14,9),(5,1),(20,6),(8,13),(18,8)]},
           {frozenset(p) for p in [(16,17)]})
-def confusable(a,b):
+def jamo_apart(a,b):
+    """Which of the initial, medial and final jamo of two syllables differ."""
     x=divmod(ord(a)-0xAC00,588);x=(x[0],*divmod(x[1],28))
     y=divmod(ord(b)-0xAC00,588);y=(y[0],*divmod(y[1],28))
-    diff=[i for i in range(3) if x[i]!=y[i]]
+    return [i for i in range(3) if x[i]!=y[i]],x,y
+def confusable(a,b):
+    diff,x,y=jamo_apart(a,b)
     return len(diff)==1 and frozenset((x[diff[0]],y[diff[0]])) in CONFUSED[diff[0]]
+def one_jamo(a,b):
+    return len(jamo_apart(a,b)[0])==1
 
-# Read through the corrections: real words or names one stroke from a term.
-NOT_MISREAD={'고어체','시사시','드러다','동사론','박명희','주명희','동정성'}
+# Read through the corrections: real words or names one stroke from a term, or
+# a term the books really use beside the curated spelling (퍼소나, 장형시, 등시성).
+NOT_MISREAD={'고어체','시사시','드러다','동사론','박명희','주명희','동정성',
+    '퍼소나','가사문','장형시','등시성','이디어','차거운','재도적','되어보기',
+    # Words of the older Korean and the poems the books quote, and words a line
+    # break made look like a word of their own (서/정시적, 투/가리를).
+    '가리를','개안주','보이의','상래의','사설적','전가적','정시적'}
+PARTICLE=re.compile(r'(?<=[가-힣]{2})(?:의|은|는|이|가|을|를|에|와|과|로|으로)$')
+def curated_terms():
+    """Term names a person wrote: the reading-text term list and the concept
+    entries (concepts/*.json). Unlike the books' own indexes, which are read off
+    the same scans as the body text, these say how a term is spelled even where
+    the OCR never once got it right."""
+    from concepts import all_concepts
+    words=set(TERMS)
+    for entry in all_concepts():
+        for name in [entry.get('label','')]+list(entry.get('aliases',[])):
+            name=re.sub(r'\(.*?\)','',name.split(':')[0]).strip()
+            if ' ' in name:words.add(re.sub(r'\s','',name))
+            for part in re.findall(r'[가-힣]+',name):words.add(part);words.add(PARTICLE.sub('',part))
+    return {w for w in words if re.fullmatch(r'[가-힣]{3,8}',w)}
+
 def misreadings(db,keys):
-    """Words one confusable jamo away from an index term of three to eight
-    syllables (연걸어미, 피통문, 상싱력, 렉스트, 검춘수), where the source wrote the
-    word as one run, the term is at least 20 times as common, the last syllable
-    is the same (형태로 is not 형태소) and the Kiwi language model scores the
-    corrected word at least 6 higher. Read through, the survivors were misreads;
-    the Kiwi gain is what separates real words such as 이성주의, 에로스 or a
-    scholar 김소영 (gain 2 or less) from misreads (7 or more)."""
-    keys={k for k in keys if re.fullmatch(r'[가-힣]{3,8}',k)}
+    """Words one syllable away from a term of three to eight syllables (연걸어미,
+    피통문, 상싱력, 렉스트, 검춘수), where the source wrote the word as one run, the
+    last syllable is the same (형태로 is not 형태소) and the Kiwi language model
+    scores the corrected word at least 6 higher. Read through, the survivors
+    were misreads; the Kiwi gain is what separates real words such as 이성주의,
+    에로스 or a scholar 김소영 (gain 2 or less) from misreads (7 or more).
+
+    What vouches for the corrected spelling differs by where the term comes
+    from. A term read off a book's own index carries the same OCR damage as the
+    body text, so the corpus has to vouch for it: the changed jamo must be a
+    confusion seen in the word corrections and the term must be at least 20
+    times as common as the damaged form. A curated term needs neither, because
+    a person wrote it: it is enough that the jamo is a known confusion, or that
+    the term's own syllable does not occur anywhere in the library — 홑 never
+    survives this OCR, so 홑문장 is only ever read 흩문장 or 흘문장 and no
+    frequency could ever vouch for it."""
+    curated=curated_terms()
+    keys={k for k in keys if re.fullmatch(r'[가-힣]{3,8}',k)}|curated
     pattern=defaultdict(list)
     for k in keys:
         for i in range(len(k)-1):pattern[k[:i]+'\0'+k[i+1:]].append((k,i))
-    sizes=sorted({len(k) for k in keys});exact=Counter();seen=Counter()
+    sizes=sorted({len(k) for k in keys});exact=Counter();seen=Counter();syllables=Counter()
     for r in db.execute("SELECT x.raw,x.display FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.version=? AND x.kind IN ('body','note','table') AND b.category!='참고자료'",(VERSION,)):
         if compact(r['raw'])!=compact(r['display']):continue
         text,gaps,_=glyph_gaps(r['display']);raw_gaps=glyph_gaps(r['raw'])[1]
+        syllables.update(ch for ch in text if '가'<=ch<='힣')
         for p,ch in enumerate(text):
             if not '가'<=ch<='힣' or (p and not raw_gaps[p] and '가'<=text[p-1]<='힣'):continue
             for n in sizes:
                 word=text[p:p+n]
                 if len(word)<n:break
-                if word in keys:exact[word]+=1;continue
-                if any(raw_gaps[q] for q in range(p+1,p+n)):continue
+                if word in keys:exact[word]+=1
+                # A spelling a person wrote is a word; a spelling only a book's
+                # index carries can itself be the misread (흩문장 is indexed).
+                # A word broken across a line is still one word; a space or a
+                # tab inside means these are two words ("부가가치는 제조업" is not
+                # 가치논제).
+                if word in curated or any(re.search(r'[ \t]',raw_gaps[q]) for q in range(p+1,p+n)):continue
                 for i in range(n-1):
-                    for k,_ in pattern.get(word[:i]+'\0'+word[i+1:],()):
-                        if confusable(word[i],k[i]):seen[(word,k)]+=1
+                    for k,_ in pattern.get(word[:i]+'\0'+word[i+1:],()):seen[(word,k,i)]+=1
     from kiwipiepy import Kiwi
     kiwi=Kiwi(num_workers=2);score=lambda w:kiwi.analyze(w+'의 개념',top_n=1)[0][1]
     found={}
-    for (word,k),count in seen.items():
-        if word in keys or word in NOT_MISREAD or exact[k]<10 or count*20>exact[k]:continue
-        if score(k)-score(word)>=6:found[word]=k
+    for (word,k,i),count in seen.items():
+        if word in NOT_MISREAD:continue
+        stroke=confusable(word[i],k[i]);unseen=syllables[k[i]]==0
+        by_corpus=word not in keys and stroke and exact[k]>=10 and count*20<=exact[k]
+        by_curated=k in curated and count>=2 and (stroke or unseen)
+        if not (by_corpus or by_curated):continue
+        # A syllable the OCR never produces anywhere is evidence on its own, so
+        # a word one jamo from the term needs nothing from the language model
+        # (홑문장 is read 흩문장 and 홀문장, and 홀 + 문장 reads as plain Korean);
+        # further off, the model still has to prefer the term (흘문장, gain 5.8).
+        floor=0 if unseen and one_jamo(word[i],k[i]) else 5 if unseen else 6
+        if score(k)-score(word)>=floor:found[word]=k
     return dict(sorted(found.items()))
 
 def spacing(db,keys):
@@ -230,7 +279,10 @@ def spacing(db,keys):
             if any(re.search(r'[ \t]',g) for g in inner):spaced[term]+=1
             elif not any(inner):joined[term]+=1
     # 관형사절 is never spaced in the books; 문학교육 is spaced 8% of the time and 안은문장 78%.
-    return sorted(k for k in keys if joined[k]>=3 and spaced[k]<=.03*(spaced[k]+joined[k]))
+    # A term of three syllables or more that the books set solid throughout is
+    # not disqualified by one spaced reading, which is as often the layout or
+    # the scan as the book (체계문 21 to 1, 사용문 9 to 1).
+    return sorted(k for k in keys if joined[k]>=3 and (spaced[k]<=.03*(spaced[k]+joined[k]) or (len(k)>=3 and spaced[k]<=1 and joined[k]>=8)))
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--category',default='');args=parser.parse_args()
@@ -242,7 +294,7 @@ def main():
     if path.exists():
         for key,e in json.loads(path.read_text(encoding='utf-8')).get('terms',{}).items():
             for s in e['sources']:
-                if s.get('indexed',True):before[s['book']].append((key,e['label'],s['pdf_page']))
+                if s.get('indexed',True):before[s['book']].append((key,e['label'],e.get('variants',[]),s['pdf_page']))
     with core.connect() as db:
         books=db.execute("SELECT id,title,category,pages FROM books WHERE category!='참고자료'"+(" AND category=?" if args.category else '')+" ORDER BY category,title",(args.category,) if args.category else ()).fetchall()
         for b in books:
@@ -281,20 +333,33 @@ def main():
                     entry=terms[key_of(term)];entry['label'][term]+=1
                     entry['sources'].append({'book':b['title'],'category':b['category'],'pdf_page':pdf,'page_id':ids[pdf]})
             carried=0
-            for key,label,pdf in before.get(b['title'],[]):
-                if (key,pdf) in seen or pdf not in ids or key not in keyed[pdf]:continue
+            for key,label,variants,pdf in before.get(b['title'],[]):
+                # A term filed under its corrected spelling (홑문장) is on the page under
+                # the damaged one, which the previous build kept among its variants.
+                if (key,pdf) in seen or pdf not in ids or not any(key_of(v) in keyed[pdf] for v in [key,*variants]):continue
                 seen.add((key,pdf));carried+=1
                 entry=terms[key];entry['label'][label]+=1
                 entry['sources'].append({'book':b['title'],'category':b['category'],'pdf_page':pdf,'page_id':ids[pdf]})
             report.append({'book':b['title'],'index_pages':index_pages,'entries':kept+carried,'carried':carried})
             print(f"{b['title']}: index pages {index_pages}, validated entries {kept}, kept from the previous build {carried}",flush=True)
         # The first two syllables of a term count as well: 동격 of 동격절 and 동격 관형사절.
+        # The curated term list joins those a book's index never listed (심미적, 음운론).
         hangul=[k for k in terms if re.fullmatch(r'[가-힣]{2,14}',k)]
-        joined=spacing(db,set(hangul)|{k[:2] for k in hangul})
+        joined=spacing(db,set(hangul)|{k[:2] for k in hangul}|{t for t in TERMS if re.fullmatch(r'[가-힣]{2,14}',t)})
         print('joined spellings',len(joined),flush=True)
         joined_terms=(frozenset(joined),max(map(len,joined),default=0))
         misread=misreadings(db,terms)
         print('misread terms',len(misread),flush=True)
+        # An index page is read off the same scan as the body text, so a term
+        # the OCR damages there is indexed damaged (흩문장 for 홑문장). File and
+        # show it under the spelling the reading text is corrected to; the
+        # damaged spelling stays in `variants`, which is what the next build
+        # looks for on the page.
+        for key in [k for k in terms if k in misread]:
+            entry=terms.pop(key);target=terms[misread[key]]
+            for label,n in entry['label'].items():target['label'][misread.get(label,label)]+=n
+            target['label'][key]+=0
+            target['sources']+=entry['sources']
         # Defining sentences. A longer indexed term containing this one
         # (동격 관형사절 for 관형사절) is not a definition of this one.
         by_length=sorted(terms,key=len);n=0;cache={};longer_of={}

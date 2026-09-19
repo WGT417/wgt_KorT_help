@@ -121,8 +121,8 @@ class ReadingTextTests(unittest.TestCase):
             self.assertEqual(marks,raw.endswith('처럼'),raw)
     def test_period_less_footnote_numbers_and_misread_commas(self):
         from text_pipeline import tidy_display
-        cases=[('이끌어질 수도 있다46 남의 말이나','이끌어질 수도 있다 46 남의 말이나','이끌어질 수도 있다 남의 말이나'),
-               ('모음을 구분한다 12 단모음은','모음을 구분한다 12 단모음은','모음을 구분한다 단모음은'),
+        cases=[('이끌어질 수도 있다46 남의 말이나','이끌어질 수도 있다 46 남의 말이나','이끌어질 수도 있다. 남의 말이나'),
+               ('모음을 구분한다 12 단모음은','모음을 구분한다 12 단모음은','모음을 구분한다. 단모음은'),
                ('격 조사에서 나타나며70 격 조사 중에서도','격조사에서 나타나며 70 격조사 중에서도','격조사에서 나타나며 격조사 중에서도'),
                ('불러일으킬 수 있고1 그것이 목숨을','불러일으킬 수 있고 1 그것이 목숨을','불러일으킬 수 있고， 그것이 목숨을'),
                # Numbers that count something stay.
@@ -140,7 +140,7 @@ class ReadingTextTests(unittest.TestCase):
         self.assertEqual(shown('단원을 시작하며，2 생활 속에서','단원을 시작하며，2 생활 속에서'),'단원을 시작하며, 2 생활 속에서')
         self.assertEqual(shown('논의는 박진호(1998)， 민현식(1999： 119-156)','논의는 박진 호(1998)， 민현식(1999：119-156)'),'논의는 박진호(1998), 민현식(1999:119-156)')
         self.assertEqual(shown('특히굿맨(1970)이','특히 굿맨(1970)이'),'특히 굿맨(1970)이')
-        self.assertEqual(shown('것이다 15) 이런 점에서','것이다 15) 이런 점에서'),'것이다 이런 점에서')
+        self.assertEqual(shown('것이다 15) 이런 점에서','것이다 15) 이런 점에서'),'것이다. 이런 점에서')
         self.assertEqual(shown('시간성， 통작성 등','시간성， 통 작성 등',{'통작성':'동작성'}),'시간성, 동작성 등')
         # Not one word in the source: 부가가치는 제조업 is not 가치논제.
         self.assertEqual(shown('부가가치는 제조업이','부가 가치는 제조업이',{'가치는제':'가치논제'}),'부가 가치는 제조업이')
@@ -149,6 +149,26 @@ class ReadingTextTests(unittest.TestCase):
                               ('(325 가)는 접미사',''),('2 학년에서',''),('역으로 영상 서사를 감상한 후 그 것','')]:
             raw=first+body
             self.assertEqual(split_heading(raw,raw.replace('\n',' '))[0],heading,first)
+    def test_screen_text_round_four(self):
+        # 한국어표준문법 434·472쪽, 우리말문법론 496쪽.
+        from text_pipeline import tidy_display,correct_display,callout_marks
+        shown=lambda raw,display,misread={}:correct_display(tidy_display(raw,display,self.terms,misread)[0])[0]
+        홑={'흩문장':'홑문장','흘문장':'홑문장','홀문장':'홑문장'}
+        # The OCR never produces 홑, so every spelling of the term on the page is damaged.
+        self.assertEqual(shown('문장을 흘문장(단문 短文)이라','문장을 흘 문장(단문 短文)이라',홑),'문장을 홑문장(단문 短文)이라')
+        # A line break inside the word, and a source that lost the space entirely.
+        self.assertEqual(shown('이루어진 흩\n문장이다','이루어진 흩 문장이다',홑),'이루어진 홑문장이다')
+        self.assertEqual(shown('이루어진문장을흩문장이라고한다.','이루어진 문장을 흩 문장이라고 한다.',홑),'이루어진 문장을 홑문장이라고 한다.')
+        # A cross-reference between two sentences is dropped like a footnote mark.
+        self.assertEqual(shown('뜻매김하고자 한다. 적용4\n전통적으로 문장은','뜻 매김하고자 한다. 적용4 전통적으로 문장은'),'뜻 매김하고자 한다. 전통적으로 문장은')
+        self.assertEqual(shown('알 수 있다.[덧붙임 1].\n우리의 문법학자','알 수 있다.[덧붙임 1]. 우리의 문법학자'),'알 수 있다. 우리의 문법학자')
+        for raw,marks in [('여겨진다. 적용5 이제 이 두 가지',1),('한다.[덧붙임 8J.',1),('가진다.[덧붙임 1되.',1),
+                          ('나타나지 않는다. 적용1 0 억양을 달리하여',1),('구분한다. 적용19. 적용20\n‘-이’와',2),
+                          # The sentence reads through these, so they stay.
+                          ('않으나 [덧붙임 2]에서 언급한 김동찬의',0),('형태이다. 제13장 [덧붙임 5]를 보라.',0),
+                          ('관점에서는 [덧붙임 4] 에서 제시한 바와',0),('교수·학습모형의 적용 1 단계: 모형에 대한',0),
+                          ('적용 300\t책임 이양모양 297',0)]:
+            self.assertEqual(len(callout_marks(raw)),marks,raw)
     def test_terms_rejoin_only_where_the_source_had_no_space(self):
         from text_pipeline import tidy_display
         self.assertEqual(tidy_display('동격 관형사절과','동 격 관형 사절과',self.terms)[0],'동격 관형사절과')

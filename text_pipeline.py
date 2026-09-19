@@ -28,16 +28,37 @@ SENTENCE_INITIAL=set('즉이그저또곧더왜꼭늘잘참좀못안한두세네�
 COUNTED=re.compile(r'(?:부터|까지|내지|또는|및|이상|이하|미만|이내|년대|세기|번째|차시|개국|년|월|일|시|분|초|개|명|사람|권|쪽|면|장|절|항|조|편|부|차|회|번|등급|단계|가지|종류|음절|음보|자|글자|행|연|대|세|학년|학기|인칭|모음|자음|품사|퍼센트|배|점|마리|곳|줄|칸|단원|과|원)(?:이|가|은|는|을|를|의|에|에서|과|와|도|만|로|으로|부터|까지|씩|째|간|쯤|이나|나|이다|이며|이고|처럼|같이|만큼|에서는|에는|으로는|로는|에서도|에도|이라는|라는|이란)?')
 # A footnote number, sometimes read with l or I for 1 (l7 is 17).
 NUMBER=r'\d{1,2}(?![\dlI])|[lI]\d(?!\d)|\d[lI](?![\dlI])'
+
+# Two books point from the running text to a boxed exercise or an addendum
+# printed elsewhere ("한다. 적용4", "있다.[덧붙임 1]."). Like a footnote number the
+# mark belongs to the page, not to the sentence. The number and the brackets
+# come out of the text layer damaged ("[덧붙임 8J.", "[덧붙임 1이." for 10],
+# "적용1 0" for 적용10), so only the label itself is matched exactly.
+CALLOUT_NUMBER=r'\d{1,2}(?:[ \t]*[,，][ \t]*\d{1,2})?(?:[ \t]+\d(?!\d)|[ \t]*[가-힣](?![가-힣]))?'
+CALLOUT_CLOSE=r'[ \t]*[\])}J1l]{0,2}[ \t]*'
+# A mark the sentence reads through stays: "[덧붙임 2]에서 언급한", "제13장 [덧붙임
+# 5]를 보라", "[덧붙임 11] 에서". A mark closed by a period ends the sentence
+# before it, so "[덧붙임 4]. 이 밖에도" is a mark and 이 there is a word.
+CALLOUT_END=r'(?:[.。](?=[ \n，,]|$)|(?=[ \n，,]|$)(?![ \t]*(?:에서|에|을|를|의|이|가|은|는|으로|로|과|와|도|만|까지|부터)(?![가-힣])))'
+ADDENDUM=re.compile(r'[\[({f][ \t]*(?:덧붙임|덧붙엄)\s*'+CALLOUT_NUMBER+CALLOUT_CLOSE+CALLOUT_END)
+APPLY=re.compile(r'(?:(?<=[다요자라])|(?<=[.。])|(?<=[，,])|(?<=\d)|(?<=[\])}】])|(?<=\n)|(?<=\A))'
+                 r'[ \t]*(적용[ \t]*'+CALLOUT_NUMBER+CALLOUT_CLOSE+CALLOUT_END+r')')
+def callout_marks(raw):
+    """(start, end) of every cross-reference mark standing between sentences."""
+    return [m.span() for m in ADDENDUM.finditer(raw)]+[m.span(1) for m in APPLY.finditer(raw)]
+
 def note_marks(raw):
-    """(start, end, replacement) for the footnote marks and misread commas in `raw`."""
-    marks={}
+    """(start, end, replacement) for the footnote marks, cross-reference marks
+    and the sentence punctuation the marks took with them, in `raw`."""
+    marks={span:'' for span in callout_marks(raw)}
     for m in re.finditer(r'(?<=[다요][.!?。])([가-힣]|\d{1,2})(?=[ \t]+(\S))',raw):
         mark,after=m.group(1),m.group(2)
         if mark in SENTENCE_INITIAL or (mark.isdigit() and after!='('):continue
         marks[m.span(1)]=''
-    # The period was lost: "이끌어질 수도 있다46 남의 말이나", "구분한다 12 단모음은", "것이다 15) 이런".
+    # The superscript took the period with it ("이끌어질 수도 있다46 남의 말이나",
+    # "구분한다 12 단모음은", "것이다 15) 이런"), so the mark is read back as one.
     for m in re.finditer(r'(?<=[가-힣]다)[ \t]*('+NUMBER+r'|\d{1,2}\))(?=[ \t\n]+([가-힣]+))',raw):
-        if not COUNTED.fullmatch(m.group(2)):marks[m.span(1)]=''
+        if not COUNTED.fullmatch(m.group(2)):marks[m.span(1)]='.'
     # Glued to a comma and read with l or I: "성립하지 않으며，l7 보조 용언은". A plain
     # number there is as often a list item ("，2 생활 속에서，3 더 찾아 읽기").
     for m in re.finditer(r'(?<=[，,])([lI]\d(?!\d)|\d[lI](?![\dlI]))(?=[ \t\n]+([가-힣]+))',raw):
@@ -81,7 +102,8 @@ def joined_terms():
     """Index terms the books write without a space (scripts/build_term_index.py counts it)."""
     lists=_term_lists();return lists['keys'],lists['longest']
 def misread_terms():
-    """Index terms the OCR misread by one letter stroke: 통작성 -> 동작성 (scripts/build_term_index.py)."""
+    """Terms the OCR misread by one syllable: 통작성 -> 동작성, 흩문장 -> 홑문장
+    (scripts/build_term_index.misreadings)."""
     return _term_lists()['misread']
 
 # An author cited as 박진호(1998) keeps the source spacing the spacing model split (박진 호).
@@ -90,14 +112,15 @@ SURNAMES='김이박최정강조윤장임한오서신권황안송류전홍고문�
 # 이 형태 is "this form", not 이형태.
 STANDALONE=SENTENCE_INITIAL|set('것수등때데뿐바중앞뒤속밑곳적줄채듯양만번개명권쪽장절말글책뜻법')
 def tidy_display(raw,display,terms=None,misread=None):
-    """Reading text for the screen. Footnote marks are dropped; a term the books
-    write as one word is rejoined where the spacing model split it and the
-    source had no space (관 계절로 -> 관계절로, 동 격 -> 동격); example numbers
-    the OCR split are closed up ((1 23 가) -> (123가)). Returns (text, marks
-    dropped or commas restored, plus index terms the OCR misread and that are
-    shown corrected: 통작성 -> 동작성). Excerpts, evidence and citations keep
-    the source glyphs. `terms` is (keys, longest) and `misread` the corrections
-    while the term index itself is being built."""
+    """Reading text for the screen. Footnote marks and the books' own
+    cross-reference marks are dropped and the punctuation they took with them is
+    read back; a term the books write as one word is rejoined where the spacing
+    model split it and the source had no space (관 계절로 -> 관계절로, 동 격 ->
+    동격); example numbers the OCR split are closed up ((1 23 가) -> (123가)).
+    Returns (text, marks handled, plus terms the OCR misread and that are shown
+    corrected: 통작성 -> 동작성, 흩문장 -> 홑문장). Excerpts, evidence and
+    citations keep the source glyphs. `terms` is (keys, longest) and `misread`
+    the corrections while the term index itself is being built."""
     if not raw or not display or compact(raw)!=compact(display):return display,0
     text,gaps,trailing=glyph_gaps(display)
     raw_at=[i for i,ch in enumerate(raw) if not ch.isspace()]
@@ -111,12 +134,15 @@ def tidy_display(raw,display,terms=None,misread=None):
     if misread:
         chars=list(text);sizes=sorted({len(k) for k in misread},reverse=True)
         for p,ch in enumerate(text):
-            if not '가'<=ch<='힣' or (p and not raw_gaps[p] and '가'<=text[p-1]<='힣'):continue
+            # A word start on screen counts too, because the source often lost
+            # the space altogether ("이루어진문장을흩문장이라고한다").
+            if not '가'<=ch<='힣' or (p and not raw_gaps[p] and not gaps[p] and '가'<=text[p-1]<='힣'):continue
             for n in sizes:
                 if p+n>len(text):continue
                 right=misread.get(text[p:p+n])
-                # Only a word the source wrote as one run: 부가가치는 제조업 is not 가치논제.
-                if right and not any(raw_gaps[q] for q in range(p+1,p+n)):
+                # Only a word the source wrote as one run: 부가가치는 제조업 is not
+                # 가치논제. A line break inside it still leaves one word (흩\n문장).
+                if right and not any(re.search(r'[ \t]',raw_gaps[q]) for q in range(p+1,p+n)):
                     chars[p:p+n]=right;joined.update(q for q in range(p+1,p+n) if gaps[q]);fixed+=1;break
         text=''.join(chars)
     for m in re.finditer(r'(?<![가-힣])['+SURNAMES+r'][가-힣]{1,3}(?=\(\s*[12\d])',raw):
@@ -138,7 +164,7 @@ def tidy_display(raw,display,terms=None,misread=None):
     for g,ch in enumerate(text):
         gap='' if g in joined else gaps[g]
         if g in marks:
-            # A restored comma sits on the word before it: "있고， 그것이".
+            # Punctuation read back sits on the word before it: "있고， 그것이", "있다. 남의".
             if marks[g]:out.append(marks[g]);pending=''
             else:pending=pending or gap
             continue

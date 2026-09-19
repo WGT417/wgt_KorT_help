@@ -48,7 +48,19 @@ def groups_for(query):
         joined=ts[i]+ts[i+1]
         if joined in known:ts[i:i+2]=[joined]
         else:i+=1
-    return [next((a for a in ALIASES if t in a), (t,)) for t in ts]
+    groups=[next((a for a in ALIASES if t in a), (t,)) for t in ts]
+    # A term this OCR never spells right (홑문장 comes out 흩문장, 흘문장) is not on
+    # any page under its own name, so the damaged spellings are searched too.
+    # The reading text still shows the term corrected (text_pipeline.tidy_display).
+    damaged=damaged_spellings()
+    return [tuple(dict.fromkeys((*g,*(w for t in g for w in damaged.get(t,()))))) for g in groups]
+
+def damaged_spellings():
+    """Corrected term -> the spellings the OCR left on the page."""
+    from text_pipeline import misread_terms
+    by_term={}
+    for wrong,right in misread_terms().items():by_term.setdefault(right,[]).append(wrong)
+    return by_term
 
 def compact_with_offsets(text):
     chars=[]; offsets=[]

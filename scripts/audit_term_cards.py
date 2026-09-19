@@ -7,9 +7,10 @@
    person verified (±1)?
 3. Screen text: the source-card excerpts for every concept name, counted by
    the kinds of OCR damage still visible after display cleanup.
-4. Display cleanup over every body and note paragraph: footnote marks dropped,
-   misread commas restored, misread index terms corrected, heading lines set
-   apart; and how many card definitions carry the sentences that follow them.
+4. Display cleanup over every body and note paragraph: footnote marks and the
+   books' own cross-reference marks dropped, the sentence periods and commas
+   those marks took with them read back, misread terms corrected, heading lines
+   set apart; and how many card definitions carry the sentences that follow them.
 
 Result: data/term-card-audit.json. Precision of the definition rules was
 judged by reading samples; see README (찾아보기 용어 사전).
@@ -23,7 +24,7 @@ import core
 from concepts import all_concepts
 from retrieval import ALIASES
 from term_index import match_terms
-from text_pipeline import VERSION,note_marks,tidy_display,split_heading,restore_terms
+from text_pipeline import VERSION,note_marks,callout_marks,tidy_display,split_heading,restore_terms
 from passage_text import noise,ocr_damage
 
 def key_of(term):return re.sub(r'[\s\-‘’\'"·]','',term).lower()
@@ -54,18 +55,21 @@ def main():
             if kinds:damaged.append({'query':query,'book':s['title'],'pdf_page':s['pdf_page'],'kinds':kinds,'text':text[:200]})
     report['concept_benchmark']={'counts':dict(bench),'no_definition':lists['no definition'],'not_in_index':lists['not in index']}
     report['screen']={'queries':sum(bench.values()),'source_cards':cards,'cards_with_visible_damage':len(damaged),'kinds':dict(screen),'examples':damaged[:60]}
-    dropped=commas=misread=headings=0
+    dropped=commas=periods=misread=headings=callouts=0
     with core.connect() as db:
         for r in db.execute("SELECT x.raw,x.display,x.kind FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.version=? AND x.kind IN ('body','note') AND b.category!='참고자료'",(VERSION,)):
-            marks=note_marks(r['raw'])
+            marks=note_marks(r['raw']);cross=len(callout_marks(r['raw']))
             for _,_,replacement in marks:
-                if replacement:commas+=1
+                if replacement=='.':periods+=1
+                elif replacement:commas+=1
                 else:dropped+=1
+            # note_marks carries the cross-reference marks; count them apart.
+            callouts+=cross;dropped-=cross
             display=restore_terms(r['display'])
             # tidy_display leaves a paragraph whose spacing does not map to the source untouched.
             if re.sub(r'\s','',r['raw'])==re.sub(r'\s','',display):misread+=tidy_display(r['raw'],display)[1]-len(marks)
             if r['kind']=='body' and split_heading(r['raw'],display)[0]:headings+=1
-    report['display_cleanup']={'footnote_marks_dropped':dropped,'commas_restored':commas,'misread_terms_corrected':misread,'headings_set_apart':headings}
+    report['display_cleanup']={'footnote_marks_dropped':dropped,'cross_reference_marks_dropped':callouts,'sentence_periods_restored':periods,'commas_restored':commas,'misread_terms_corrected':misread,'headings_set_apart':headings}
     report['seconds']=round(time.time()-start)
     (core.DATA/'term-card-audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=1),encoding='utf-8')
     print(json.dumps({k:v for k,v in report.items() if k!='screen'},ensure_ascii=False,indent=1))
