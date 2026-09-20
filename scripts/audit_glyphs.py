@@ -23,12 +23,16 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import core
 from kiwipiepy import Kiwi
 
-# OCR shape confusions observed in this library: damaged syllable -> intended syllable.
-PAIRS={'히':'하','지':'자','볍':'법','괴':'과','영':'명','렉':'텍','럭':'텍','시':'사','둥':'등','디':'다','슴':'습','힐':'활','휠':'활','넘':'념','엽':'업','딴':'발','뭇':'뜻','갓':'것','깃':'것','밍':'명','정':'징','익':'악','볼':'불','섬':'심','겅':'경','펀':'된','히':'하','굽':'급','긍':'등','힌':'한','헤':'해','뎌':'더','츠':'초','치':'차','띠':'따','틀':'들','니':'나','샤':'서','졍':'정','딘':'단','딜':'달','텀':'럼','낱':'날'}
+# OCR shape confusions observed in this library: damaged syllable -> intended
+# syllable. Curated, not derived: the corpus on its own cannot tell a misread
+# from a rarer real word (있을/있다, 기능하다/가능하다 differ by one syllable too),
+# so only shapes the scan actually confuses are listed and every word is still
+# put to the language model and the frequency test below.
+PAIRS={'히':'하','지':'자','볍':'법','괴':'과','영':'명','렉':'텍','럭':'텍','시':'사','둥':'등','디':'다','슴':'습','힐':'활','휠':'활','넘':'념','엽':'업','딴':'발','뭇':'뜻','갓':'것','깃':'것','밍':'명','정':'징','익':'악','볼':'불','섬':'심','겅':'경','펀':'된','히':'하','굽':'급','긍':'등','힌':'한','헤':'해','뎌':'더','츠':'초','치':'차','띠':'따','틀':'들','니':'나','샤':'서','졍':'정','딘':'단','딜':'달','텀':'럼','낱':'날','핸':'한','리':'라','당':'다','헝':'항','굉':'광','빙':'방','직':'작','잉':'있','잭':'책','싱':'상','앙':'양','칭':'창','멍':'명','퉁':'통'}
 MIN_GAIN=4.0      # language-model score gain required for the corrected word
 MIN_TARGET=3      # corrected word must already occur this often in the corpus
 # Damaged-looking forms that are real words in these books; never rewritten.
-LEGITIMATE={'기지','치를','치가','치게','한지를','지음과','시이','기치를','여지는','헤는','감지','시전','시정이','지연의','투영한','상정이다','상정과','치원','교시는','시용','시용하는','지기','아디','학습지','필지','시장','시제','지시','지도','지수','지위','시각','시기','시대','시절','시점','시집','시행','시험','정도','정의','정서','정보','정리','정상','치료','치우','영향','영역','영상','영화','섬유','섬세','틀어','틀린','틀에','틀을','틀이','낱자','낱말','니라고','시상','시선','시조','시어','시가','시인','시적','정치','정신','정체','정확','정당','영어','영역','영상'}
+LEGITIMATE={'기지','치를','치가','치게','한지를','지음과','시이','기치를','여지는','헤는','감지','시전','시정이','지연의','투영한','상정이다','상정과','치원','교시는','시용','시용하는','지기','아디','학습지','필지','시장','시제','지시','지도','지수','지위','시각','시기','시대','시절','시점','시집','시행','시험','정도','정의','정서','정보','정리','정상','치료','치우','영향','영역','영상','영화','섬유','섬세','틀어','틀린','틀에','틀을','틀이','낱자','낱말','니라고','시상','시선','시조','시어','시가','시인','시적','정치','정신','정체','정확','정당','영어','영역','영상','당시','당시는','굉장','굉장히','보리','가리','이리','리는','리가','리를','빙산','당면','당하','단어','적당','해빙','헝용','직업','정직','잉어','멍에','앙상한','칭찬','명칭','호칭','인칭','대칭','사칭','칭호'}
 def accept(word,fixed,count,target,gain):
     if word in LEGITIMATE or any(word.startswith(x) for x in LEGITIMATE if len(x)>=2 and word!=x and len(word)-len(x)<=2):return False
     ratio=target/max(1,count)
@@ -52,6 +56,13 @@ def main():
         sentences_with_foreign+=hit
         for w in re.findall(r'[가-힣]{2,}',t):words[w]+=1
     print(f'passages {len(rows)}; foreign symbols {sum(foreign.values())} in {sentences_with_foreign} passages; distinct words {len(words)} ({round(time.time()-start)}s)',flush=True)
+    # The corpus vocabulary: every word form 26 books repeat. A word outside it
+    # is one the scan invented, so text_pipeline.strange_ratio can measure how
+    # much of a table or a paragraph the reader would not be able to read.
+    vocabulary=sorted(w for w,n in words.items() if n>=MIN_TARGET)
+    (core.DATA/'corpus-words.json').write_text(json.dumps({'generated':time.strftime('%Y-%m-%d %H:%M'),'minimum':MIN_TARGET,
+        'rule':f'말뭉치에서 {MIN_TARGET}회 이상 나타난 한글 어절. 이 목록에 없는 낱말은 스캔이 만들어 낸 글자로 본다','words':vocabulary},ensure_ascii=False),encoding='utf-8')
+    print('corpus vocabulary',len(vocabulary),'word forms',flush=True)
     # Candidate corrections: words containing a suspect syllable.
     candidates={}
     suspects=[w for w in words if any(s in w for s in PAIRS)]

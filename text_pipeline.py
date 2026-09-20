@@ -211,6 +211,28 @@ def corrections():
         _corrections.update(stamp=stamp,words={w:v['to'] for w,v in words.items() if len(v['to'])==len(w)})
     return _corrections['words']
 
+_vocabulary={'stamp':None,'words':frozenset()}
+def corpus_words():
+    """Word forms the 26 books repeat (scripts/audit_glyphs.py counts them)."""
+    from pathlib import Path
+    path=Path(__file__).resolve().parent/'data'/'corpus-words.json'
+    stamp=path.stat().st_mtime_ns if path.exists() else None
+    if stamp!=_vocabulary['stamp']:
+        words=json.loads(path.read_text(encoding='utf-8')).get('words',()) if path.exists() else ()
+        _vocabulary.update(stamp=stamp,words=frozenset(words))
+    return _vocabulary['words']
+
+def strange_ratio(text):
+    """Share of the Korean words in `text` that no book in the library repeats.
+    A word the scan invented (인해돼스트기반입기, 복합g씩텍스트읽기) appears once and
+    nowhere else, so a high share means the reader is being shown letters rather
+    than words. Prose that merely names rare concepts stays low, because the
+    books repeat their own terms. 0.0 when the vocabulary has not been built."""
+    known=corpus_words()
+    if not known:return 0.0
+    words=re.findall(r'[가-힣]{2,}',text)
+    return sum(w not in known for w in words)/len(words) if words else 0.0
+
 # The OCR layer uses full-width punctuation; in the page font "본용언， 본용언과"
 # looks like a space before the comma.
 PLAIN=str.maketrans({'，':',','：':':','；':';','（':'(','）':')','．':'.','？':'?','！':'!','～':'~'})

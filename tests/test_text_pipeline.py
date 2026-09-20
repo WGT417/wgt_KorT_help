@@ -94,6 +94,26 @@ class GlyphRepairTests(unittest.TestCase):
             self.assertEqual(n,1);self.assertIn('지도하는' if '지도히는' in words else '히는',text if n==0 else text.replace('지도하는','지도하는'))
         fixed,n=correct_display('자신의 생각을 말한다.')
         self.assertEqual((fixed,n),('자신의 생각을 말한다.',0))
+    def test_hangul_pulled_into_a_latin_gloss_is_noise(self):
+        # 독서교육론 사회평론 39쪽: the table column bled into the paragraph.
+        self.assertGreater(noise('복합양식 텍스트(m뻐대표”하고 있다.'),0)
+        self.assertGreater(noise('선어말어미(pre:final ending)와 어말어미로 나뉜다.'),0)
+        self.assertGreater(noise('명칭을 ^~용하기도 한다.'),0)
+        # Example numbers read with l for 1, and the syllable types of 음운론.
+        self.assertEqual(noise('(l다)는 절 속에 구가 들어 있음을 보여 준다.'),0)
+        self.assertEqual(noise('모음으로 시작하는 음절형(V형, VC형 등) 사이의 결합이다.'),0)
+    def test_tables_without_readable_words_are_not_shown(self):
+        from passage_search import readable_table
+        self.assertTrue(readable_table([['텍스트 수용 태도','수용적 긍정적 독자','비판적 저항적 독자'],
+                                        ['독서 집중도','몰입형 독자','산만한 독자(잦은 중단, 멀티태스킹)']]))
+        # 찾아보기: an entry followed by the pages it appears on.
+        self.assertFalse(readable_table([['비판적 문식성 40, 71','소리-글자 대응 107'],['비판적 이해 92, 94','수준별 교육 223'],
+                                         ['비형식적 읽기 검사지 392','수집 구조 187']]))
+        # 독서교육론 사회평론 39쪽 [표 1-4]: words no book in the library repeats.
+        self.assertFalse(readable_table([['인해돼스트기반입기','복합g씩텍스트읽기'],
+                                         ['단어 담화1 레지스터1 어후1, 언어적 패턴,','시각적 이미지 배치, 사이즈1 모앙1 색상,'],
+                                         ['의미 전닫 문법, 챔터, 문단, 문장 구조를 포함한 문자','선, 각도, 위치, 관점, 화면, 프레임, 이이콘,']]))
+        self.assertFalse(readable_table([['。 장','5 ‘','% l 겠'],['뎌','써','댁 。 ] 갈동센']]))
     def test_reading_view_keeps_doubtful_sentences_flagged(self):
         from passage_text import suspect_segments
         segs=suspect_segments('소설의 시점은 화자의 위치에 따라 달라진다. 화자가 이 ψΙ 속에서 어떤 위치를 차지하는가를 구별하는 것이 중요하다.')

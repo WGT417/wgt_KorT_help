@@ -5,9 +5,16 @@ from text_pipeline import compact,restore_terms
 # Greek/Cyrillic letters, currency and trademark signs, backslashes: OCR
 # misreads of Hangul strokes, never legitimate inside Korean prose here.
 FOREIGN=re.compile(r'[À-ɏͰ-ϿЀ-ӿ￠-￦¢©«®»™\\]')
+# Three more shapes the scan leaves behind, all read off the compacted text:
+# Hangul pulled into a Latin gloss ("텍스트(m뻐", "(C이 e & Hall"), a colon
+# standing in for a stroke ("pre:final", "a:J(l- stltuent"), and a run of carets
+# or tildes where a syllable used to be ("^~용하기도"). Example numbers the scan
+# read with l for 1 ("(l다)는") and the syllable types of 음운론 ("(V형, VC형")
+# are spelled the same way and stay.
+GLOSS=r'\((?![li][가-힣])[a-z]{1,3}(?![형류군급계열])[가-힣]|[a-z]:[a-z0-9]|[~^]{2,}'
 def noise(text):
     c=compact(text)
-    return len(re.findall(r'[가-힣][A-Za-z%&@]{1,3}[가-힣]|[가-힣][0-9][}\-]|[가-힣][0-9]{3,}|[가-힣][λ}]|[0-9]π|[a-zA-Z]\)\x27|[-~]{4,}',c))+len(FOREIGN.findall(c))+int(bool(re.match(r'^[;:，]',c)))
+    return len(re.findall(r'[가-힣][A-Za-z%&@]{1,3}[가-힣]|[가-힣][0-9][}\-]|[가-힣][0-9]{3,}|[가-힣][λ}]|[0-9]π|[a-zA-Z]\)\x27|[-~]{4,}|'+GLOSS,c))+len(FOREIGN.findall(c))+int(bool(re.match(r'^[;:，]',c)))
 
 def ocr_damage(text):
     """Kinds of OCR damage still visible in a reading sentence that noise()

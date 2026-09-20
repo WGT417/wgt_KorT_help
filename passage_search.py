@@ -1,7 +1,7 @@
 """Rank explanatory passages, not pages that merely contain query words."""
 import math,re,itertools
 from collections import Counter
-from text_pipeline import compact,VERSION,restore_terms,correct_display,tidy_display,split_heading
+from text_pipeline import compact,VERSION,restore_terms,correct_display,tidy_display,split_heading,strange_ratio
 from passage_text import best_window,clean_blocks,noise,align,suspect_segments
 
 def table_rows(raw,display):
@@ -12,6 +12,33 @@ def table_rows(raw,display):
         cells=[c for c in cells if c]
         if cells:rows.append(cells)
     return rows
+
+# Punctuation these books print. Anything else between the words is a stroke the
+# scan could not place.
+PRINTED=set(" \t.,;:!?()[]{}<>|/%&+=*@#-~'\"·‥…‘’“”–—《》〈〉「」『』〔〕°※→←↔±×÷○●△▲□■◇◆☆★①②③④⑤⑥⑦⑧⑨⑩")
+# A 찾아보기 entry ends in the pages it appears on; a 참고문헌 line carries the
+# year of publication and the pages of the article.
+INDEX_ENTRY=re.compile(r'\d{1,3}(?:\s*[,.·]\s*\d{1,3})+\s*$|\d{1,4}\s*[-–~•]\s*\d{1,4}\s*\.?\s*$|[(（]\s*[12]\d{3}')
+def readable_table(rows):
+    """Whether a table beside the matched paragraph is worth showing.
+
+    The layout calls anything set in columns a table, so this also catches the
+    pages that carry no explanation at all: 찾아보기 and 참고문헌 (an entry
+    followed by page numbers), 차례 dot leaders, the 판권지, and the pages where
+    the scan returned single glyphs instead of words. It also drops the tables
+    whose words the library never repeats, which is what a badly scanned table
+    looks like (인해돼스트기반입기 복합g씩텍스트읽기)."""
+    cells=[c for row in rows for c in row]
+    if not cells:return False
+    text=' '.join(cells);body=re.sub(r'\s','',text)
+    if len(body)<30:return False
+    if len(re.findall(r'[가-힣]',body))<len(body)*.45:return False
+    if sum(1 for ch in body if not ('가'<=ch<='힣' or ch.isalnum() or '一'<=ch<='鿿' or ch in PRINTED))>len(body)*.04:return False
+    if sum(bool(re.fullmatch(r'[\d\s,.·\-~]+',c)) or bool(INDEX_ENTRY.search(c)) for c in cells)>len(cells)*.3:return False
+    if sum(len(re.findall(r'[가-힣]',c))<=1 for c in cells)>len(cells)*.4:return False
+    # Columns the scan tore apart leave single-cell rows among the real ones.
+    if max(len(r) for r in rows)>1 and sum(len(r)==1 for r in rows)>len(rows)*.4:return False
+    return strange_ratio(text)<=.25 or len(re.findall(r'[가-힣]{2,}',text))<8
 
 def layout_source(db,page_id):
     rows=db.execute('SELECT ordinal,raw,display,kind FROM passages WHERE page_id=? ORDER BY ordinal',(page_id,)).fetchall()
@@ -33,10 +60,11 @@ def layout_source(db,page_id):
             if segments:reading.append({'kind':'body','ordinal':r['ordinal'],'heading':correct_display(heading)[0],'text':' '.join(x['text'] for x in segments),'segments':segments,'corrections':fixed})
         elif r['kind']=='table':
             cells=table_rows(r['raw'],r['display'])
-            if sum(len(c) for row in cells for c in row)>=30:
+            fixed_rows=[[correct_display(c)[0] for c in row] for row in cells]
+            # Judged as the reader sees it, after the word corrections.
+            if readable_table(fixed_rows):
                 text=restore_terms(r['display'])
                 blocks.append({'kind':'table','rows':cells,'text':text,'raw':r['raw'],'ordinal':r['ordinal']})
-                fixed_rows=[[correct_display(c)[0] for c in row] for row in cells]
                 reading.append({'kind':'table','rows':fixed_rows,'text':correct_display(text)[0],'raw':r['raw'],'ordinal':r['ordinal']})
         elif r['kind']=='note' and len(re.findall(r'[가-힣]',r['display']))>=40 and not noise(r['display']):
             blocks.append({'kind':'note','text':restore_terms(r['display'])})
@@ -86,8 +114,10 @@ def hybrid(db,query,category,book_id,lexical,admissible,penalty):
           FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.id IN (%s)'''%','.join('?'*len(hits)),[h['passage_id'] for h in hits])}
         for h in hits:
             r=rows.get(h['passage_id'])
-            # Skip chunks of passages rebuilt after the index was made.
-            if r is None or h['passage_id'] in ranked or h['excerpt'] not in r['raw']:continue
+            # Skip chunks of passages rebuilt after the index was made, and
+            # chunks the damage rules have since learned to recognise: the index
+            # keeps whatever was true when it was built.
+            if r is None or h['passage_id'] in ranked or h['excerpt'] not in r['raw'] or noise(h['text']):continue
             r['passage_raw']=r['raw'];r['raw'],r['display']=h['excerpt'],h['text'];c=compact(h['text']);r['compact']=c
             if not admissible(r,c):continue
             r.update(lexical_score=0.0,semantic_score=h['semantic'],match='semantic',score=h['semantic']*100-penalty(r,c))
