@@ -50,6 +50,13 @@ def _load():
 
 def all_concepts():return _load()
 
+# 이 and 가 are not in retrieval.PARTICLE_RE, and must not be: stripping them
+# would eat the last syllable of 소설가, 미닫이, 해돋이, 어린이 — words the books
+# use as examples. But a question does end in them ("조음점이 뭐야", "연어가 뭐죠"),
+# so the stripped form is offered as one more candidate rather than replacing the
+# word. A candidate matters only if it equals a concept's name, and 미닫/해돋/어린
+# are nobody's name.
+SUBJECT=re.compile(r'(?<=[가-힣][가-힣])[이가]$')
 def query_terms(query):
     """Whole words of the question plus adjacent pairs and triples, so '재귀 대명사'
     and '재귀대명사' both yield 재귀대명사. A particle is stripped only from the
@@ -60,7 +67,8 @@ def query_terms(query):
     out=[]
     for n in (3,2,1):
         for i in range(len(raw)-n+1):
-            words=raw[i:i+n];out+=[''.join(words),''.join(words[:-1])+strip_particle(words[-1])]
+            words=raw[i:i+n];head=''.join(words[:-1])
+            out+=[head+words[-1],head+strip_particle(words[-1]),head+SUBJECT.sub('',words[-1])]
     words=[compact(t) for t in terms(query)]
     out+=[a+b+c for a,b,c in zip(words,words[1:],words[2:])]+[a+b for a,b in zip(words,words[1:])]+words
     return [t for t in dict.fromkeys(out) if len(t)>=2]
