@@ -12,9 +12,20 @@ FOREIGN=re.compile(r'[À-ɏͰ-ϿЀ-ӿ￠-￦¢©«®»™\\]')
 # read with l for 1 ("(l다)는") and the syllable types of 음운론 ("(V형, VC형")
 # are spelled the same way and stay.
 GLOSS=r'\((?![li][가-힣])[a-z]{1,3}(?![형류군급계열])[가-힣]|[a-z]:[a-z0-9]|[~^]{2,}'
+# A gloss set in the Latin alphabet with a Hangul syllable standing where letters
+# should be: "기능 문법(gr 없 lmar)", "intellectu 외 seriousness", "텍스 틴 monomc
+# 벼 상대되는". Read off the spaced text, because compacting closes the gap that
+# gives it away. A particle between two Latin words is an ordinary sentence
+# ("Chomsky 의 Syntactic Structures"), so particles do not count.
+PARTICLE=r'의|은|는|이|가|을|를|과|와|도|에|로|나|만|및|즉|등'
+def lone(size):return r'(?!(?:'+PARTICLE+r')(?![가-힣]))(?<![가-힣])[가-힣]{1,'+str(size)+r'}(?![가-힣])'
+# Latin on both sides is damage on its own; Hangul on both sides needs the
+# stranded run to be a single syllable, or a real sentence would match.
+STRANDED=re.compile(r'[A-Za-z]{2,}[ \t]+'+lone(2)+r'[ \t]+[A-Za-z]{2,}'
+                    r'|'+lone(1)+r'[ \t]+[A-Za-z]{3,}[ \t]+'+lone(1))
 def noise(text):
     c=compact(text)
-    return len(re.findall(r'[가-힣][A-Za-z%&@]{1,3}[가-힣]|[가-힣][0-9][}\-]|[가-힣][0-9]{3,}|[가-힣][λ}]|[0-9]π|[a-zA-Z]\)\x27|[-~]{4,}|'+GLOSS,c))+len(FOREIGN.findall(c))+int(bool(re.match(r'^[;:，]',c)))
+    return len(re.findall(r'[가-힣][A-Za-z%&@]{1,3}[가-힣]|[가-힣][0-9][}\-]|[가-힣][0-9]{3,}|[가-힣][λ}]|[0-9]π|[a-zA-Z]\)\x27|[-~]{4,}|'+GLOSS,c))+len(FOREIGN.findall(c))+len(STRANDED.findall(text))+int(bool(re.match(r'^[;:，]',c)))
 
 def ocr_damage(text):
     """Kinds of OCR damage still visible in a reading sentence that noise()

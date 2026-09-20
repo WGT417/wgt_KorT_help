@@ -102,6 +102,24 @@ class GlyphRepairTests(unittest.TestCase):
         # Example numbers read with l for 1, and the syllable types of 음운론.
         self.assertEqual(noise('(l다)는 절 속에 구가 들어 있음을 보여 준다.'),0)
         self.assertEqual(noise('모음으로 시작하는 음절형(V형, VC형 등) 사이의 결합이다.'),0)
+    def test_hangul_stranded_inside_a_latin_gloss_is_noise(self):
+        # The scan reads "al" as 외 and drops syllables into the middle of a gloss.
+        self.assertGreater(noise('지적인 세련(intellectu 외 seriousness)으로 보기도 한다.'),0)
+        self.assertGreater(noise('기능 문법 (따 lctional gr 없 lmar) 을 중시하였다.'),0)
+        self.assertGreater(noise('‘단일 양식 텍스 틴 monomc 벼 상대되는 개념이다.'),0)
+        # A particle between two Latin words is an ordinary sentence.
+        self.assertEqual(noise('Chomsky 의 Syntactic Structures 는 중요하다.'),0)
+        self.assertEqual(noise('Halliday 와 Hasan 이 제시한 응결성 개념이다.'),0)
+        self.assertEqual(noise('복합 양식 텍스트는 multimodal text 로 불린다.'),0)
+    def test_two_syllable_terms_are_corrected_by_the_curated_list(self):
+        from text_pipeline import correct_display,corrections
+        words=corrections()
+        # 직문 reads as 직+문 to the language model, so a person's term list vouches for 작문.
+        if '직문' in words:
+            self.assertEqual(words['직문'],'작문')
+            self.assertEqual(correct_display('직문 능력의 합에서')[0],'작문 능력의 합에서')
+        # Real words spelled the same way are never rewritten.
+        for word in ['명시','부시','치이','단어','시대','영향']:self.assertNotIn(word,words)
     def test_tables_without_readable_words_are_not_shown(self):
         from passage_search import readable_table
         self.assertTrue(readable_table([['텍스트 수용 태도','수용적 긍정적 독자','비판적 저항적 독자'],

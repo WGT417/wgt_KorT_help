@@ -32,11 +32,40 @@ PAIRS={'히':'하','지':'자','볍':'법','괴':'과','영':'명','렉':'텍','
 MIN_GAIN=4.0      # language-model score gain required for the corrected word
 MIN_TARGET=3      # corrected word must already occur this often in the corpus
 # Damaged-looking forms that are real words in these books; never rewritten.
-LEGITIMATE={'기지','치를','치가','치게','한지를','지음과','시이','기치를','여지는','헤는','감지','시전','시정이','지연의','투영한','상정이다','상정과','치원','교시는','시용','시용하는','지기','아디','학습지','필지','시장','시제','지시','지도','지수','지위','시각','시기','시대','시절','시점','시집','시행','시험','정도','정의','정서','정보','정리','정상','치료','치우','영향','영역','영상','영화','섬유','섬세','틀어','틀린','틀에','틀을','틀이','낱자','낱말','니라고','시상','시선','시조','시어','시가','시인','시적','정치','정신','정체','정확','정당','영어','영역','영상','당시','당시는','굉장','굉장히','보리','가리','이리','리는','리가','리를','빙산','당면','당하','단어','적당','해빙','헝용','직업','정직','잉어','멍에','앙상한','칭찬','명칭','호칭','인칭','대칭','사칭','칭호'}
+LEGITIMATE={'기지','치를','치가','치게','한지를','지음과','시이','기치를','여지는','헤는','감지','시전','시정이','지연의','투영한','상정이다','상정과','치원','교시는','시용','시용하는','지기','아디','학습지','필지','시장','시제','지시','지도','지수','지위','시각','시기','시대','시절','시점','시집','시행','시험','정도','정의','정서','정보','정리','정상','치료','치우','영향','영역','영상','영화','섬유','섬세','틀어','틀린','틀에','틀을','틀이','낱자','낱말','니라고','시상','시선','시조','시어','시가','시인','시적','정치','정신','정체','정확','정당','영어','영역','영상','당시','당시는','굉장','굉장히','보리','가리','이리','리는','리가','리를','빙산','당면','당하','단어','적당','해빙','헝용','직업','정직','잉어','멍에','앙상한','칭찬','명칭','호칭','인칭','대칭','사칭','칭호','명시','부시','치이'}
 def accept(word,fixed,count,target,gain):
-    if word in LEGITIMATE or any(word.startswith(x) for x in LEGITIMATE if len(x)>=2 and word!=x and len(word)-len(x)<=2):return False
+    if blocked(word):return False
     ratio=target/max(1,count)
     return (ratio>=4 and gain>=6) or (ratio>=15 and gain>=4)
+def blocked(word):
+    return word in LEGITIMATE or any(word.startswith(x) for x in LEGITIMATE if len(x)>=2 and word!=x and len(word)-len(x)<=2)
+
+# A two-syllable word is always readable as noun+noun (직문 is 직 plus 문), so the
+# language model never gains enough to call it damaged and the test above lets
+# 직문 stand beside 작문. What vouches for the spelling instead is a person: the
+# term lists a person wrote (text_pipeline.TERMS and concepts/*.json). The
+# damaged form must not be a term itself, the changed syllable must be a
+# confusion this scan is already known to make, and the term must be this much
+# more common than the damaged form.
+TERM_RATIO=100
+def curated_pairs():
+    """Two-syllable term names a person wrote, for the rule above."""
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    from text_pipeline import TERMS
+    from concepts import all_concepts
+    words=set(TERMS)
+    for entry in all_concepts():
+        for name in [entry.get('label','')]+list(entry.get('aliases',[])):
+            name=re.sub(r'\(.*?\)','',name.split(':')[0]).strip()
+            for part in re.findall(r'[가-힣]+',name):words.add(part)
+    return {w for w in words if re.fullmatch(r'[가-힣]{2}',w)}
+
+def term_correction(word,options,words,terms):
+    """The curated term `word` was misread as, or None."""
+    if len(word)!=2 or word in terms or blocked(word):return None
+    for fixed in options:
+        if fixed in terms and words[fixed]>=TERM_RATIO*words[word]:return fixed
+    return None
 FOREIGN=re.compile(r'[Ͱ-ϿЀ-ӿ￠-￦¢©«®»™\\]')
 
 def main():
@@ -64,9 +93,9 @@ def main():
         'rule':f'말뭉치에서 {MIN_TARGET}회 이상 나타난 한글 어절. 이 목록에 없는 낱말은 스캔이 만들어 낸 글자로 본다','words':vocabulary},ensure_ascii=False),encoding='utf-8')
     print('corpus vocabulary',len(vocabulary),'word forms',flush=True)
     # Candidate corrections: words containing a suspect syllable.
-    candidates={}
+    candidates={};terms=curated_pairs()
     suspects=[w for w in words if any(s in w for s in PAIRS)]
-    print('suspect word forms',len(suspects),flush=True)
+    print('suspect word forms',len(suspects),'; two-syllable curated terms',len(terms),flush=True)
     def score(word):
         return kiwi.analyze(word,top_n=1)[0][1]
     checked=0
@@ -84,6 +113,9 @@ def main():
             gain=score(fixed)-base
             if gain>=MIN_GAIN and (best is None or gain>best[1]):best=(fixed,gain)
         if best and accept(w,best[0],words[w],words[best[0]],best[1]):candidates[w]={'to':best[0],'count':words[w],'target_count':words[best[0]],'gain':round(best[1],2)}
+        else:
+            term=term_correction(w,options,words,terms)
+            if term:candidates[w]={'to':term,'count':words[w],'target_count':words[term],'gain':round(score(term)-base,2),'by':'term'}
         if checked%2000==0:print('scored',checked,'accepted',len(candidates),flush=True)
     accepted=dict(sorted(candidates.items(),key=lambda kv:-kv[1]['count']))
     core.DATA.mkdir(exist_ok=True)
