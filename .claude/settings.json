@@ -1,0 +1,13 @@
+{
+  "env": {
+    "CLOUDSDK_PYTHON": "C:/Users/user/AppData/Local/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe",
+    "PYTHONIOENCODING": "utf-8"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(C:/Users/user/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe scripts/cloud.py deploy*)",
+      "Bash(C:/Users/user/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe scripts/cloud.py url*)",
+      "Bash(firebase deploy --only hosting*)"
+    ]
+  }
+}

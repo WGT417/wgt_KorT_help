@@ -11,8 +11,8 @@ function quotaText(q){if(!q)return '';if(q.admin)return '관리자 · AI 해설 
 function showQuota(q){if(!q||q.unlimited)return;const text=quotaText(q);if(text)$('#side-connection').textContent=text;$('#connection-dot').classList.toggle('off',Boolean(q.unavailable||q.remaining===0));}
 async function loadStatus(){try{statusData=await api('/api/status');csrf=statusData.csrf;const books=statusData.books;for(const cat of ['문식성','문법','문학']){const count=books.filter(b=>b.category===cat).length;$('#count-'+cat).textContent=count;$('#card-count-'+cat).textContent=count+'권';}const done=books.reduce((a,b)=>a+b.processed,0),total=books.reduce((a,b)=>a+b.pages,0);$('#index-title').textContent=`${books.length}권의 개론서를 함께 살펴봅니다`;$('#index-detail').textContent=`${number(statusData.reading_pages)} / ${number(total)}페이지 문단 정리 · 띄어쓰기 자동 처리${statusData.semantic_search?' · 뜻으로도 찾기':''}`;$('#index-badge').textContent=statusData.ocr?.status==='running'?`OCR 보완 ${statusData.ocr.done}/${statusData.ocr.total}`:statusData.reading_pages===total&&total?'문단 정리 완료':'문단 정리 중';$('#side-connection').textContent=statusData.key_configured?(statusData.public?'AI 해설 사용 가능':'OpenAI 키 연결됨'):'원문 검색 사용 가능';$('#mode-label').textContent=statusData.public?(statusData.admin?'공개 서재 · 관리자':'공개 서재 · AI 해설 하루 전체 '+(statusData.quota?.limit??100)+'회'):'개인 로컬 서재';$('#key-section').hidden=Boolean(statusData.public);$('#admin-section').hidden=!statusData.public;$('#settings-title').textContent=statusData.public?'관리자 설정':'OpenAI 자동 연결';if(statusData.key_configured)showQuota(statusData.quota);if(!$('#settings-dialog').open)$('#key-status').textContent=statusData.key_configured?'키가 연결되어 있습니다. 첫 해설 요청에서 API 사용 가능 여부를 확인합니다.':'현재 연결된 키가 없습니다.';$('#admin-status').textContent=statusData.admin?'관리자 토큰이 확인되었습니다.':adminToken?'저장된 토큰이 서버와 일치하지 않습니다.':'현재 관리자 토큰이 없습니다.';}catch(error){notice(statusData?.public?'서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.':'로컬 서버에 연결할 수 없습니다. 앱 실행 파일로 서버를 시작해 주세요.',true);$('#side-connection').textContent='서버 연결 안 됨';}}
 function chooseCategory(category){$('#category').value=category;$('#question').focus();}
-function pageLabel(s){return s.printed_page?`책 ${s.printed_page}쪽 · 자료 ${s.pdf_page}페이지`:`자료 ${s.pdf_page}페이지 · 책 쪽수 미확인`;}
-function qualityLabel(s){return s.number_status==='manual'?'책 쪽수 원문 대조 완료':s.number_status==='sequence'?'책 쪽수 연속 번호로 자동 확인':'책 쪽수 확인 전 · 자료 페이지 기준';}
+function pageLabel(s){return s.printed_page?`책 ${s.printed_page}쪽${s.number_status==='offset'?'(계산)':''} · 자료 ${s.pdf_page}페이지`:`자료 ${s.pdf_page}페이지 · 책 쪽수 미확인`;}
+function qualityLabel(s){return s.number_status==='manual'?'책 쪽수 원문 대조 완료':s.number_status==='sequence'?'책 쪽수 연속 번호로 자동 확인':s.number_status==='offset'?'책 쪽수 여백에서 읽지 못해 앞뒤 확정 쪽의 간격으로 계산 · 인용 전 확인 권장':'책 쪽수 확인 전 · 자료 페이지 기준';}
 function referenceButton(source,quote=''){
     const quotes=Array.isArray(quote)?quote:quote?[quote]:[];
     const button=el('button',`${source.title} · ${source.printed_page?'책 '+source.printed_page+'쪽':'자료 '+source.pdf_page+'페이지'}${quotes.length>1?' · 근거 '+quotes.length+'곳':''}`,'reference-button citation-chip');
@@ -62,7 +62,7 @@ function renderTable(block,caption){
     wrap.append(list);return wrap;
 }
 function conceptSourceButton(source){
-    const label=`${source.title||source.book} · ${source.printed_page?'책 '+source.printed_page+'쪽':'자료 '+source.pdf_page+'페이지'}`;
+    const label=`${source.title||source.book} · ${source.printed_page?'책 '+source.printed_page+'쪽'+(source.number_status==='offset'?'(계산)':''):'자료 '+source.pdf_page+'페이지'}`;
     const button=el('button',label,'reference-button citation-chip');button.type='button';
     if(source.id){button.title=(source.note||'')+(source.terms?.length?'\n일치 용어: '+source.terms.join(', '):'');button.onclick=()=>openSource(source.id,'');}
     else{button.disabled=true;button.title='이 서재에서 해당 책을 찾지 못했습니다.';}

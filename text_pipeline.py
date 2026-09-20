@@ -251,11 +251,28 @@ JAMO={'E':'ㄹ','L':'ㄴ','T':'ㅜ','근':'ㄹ','己':'ㄹ','口':'ㅁ','人':'�
 # sentence is talking about sounds and letters ("‘괴, 귀’는 이중 모음으로 발음할
 # 수 있다", "국어의 후음에는 ‘송’이 존재한다").
 JAMO_WORD={'님':'ㅂ','표':'ㅍ','송':'ㅎ','동':'ㅎ','승':'ㅎ','종':'ㅎ','괴':'ㅚ','귀':'ㅟ'}
-# The particle after a citation names the jamo: ‘ㄹ’로 is 리을로, but ‘ㄷ’으로 is
-# 디귿으로. So a quoted E followed by 으로 is ㄷ, not ㄹ — "평파열음화에 의해 ‘E’으로
-# 바뀐다", "맞춤법 제7항 ‘E’으로 적을 근거가 없는", "‘E’으로 끝나는 모든 형태소". All
-# 28 such places in the library are ㄷ; the 43 with 로 are ㄹ.
-BY_PARTICLE={'E':('으로','ㄷ')}
+# A jamo's own NAME says which particle follows it, so the particle says which
+# jamo the glyph stands for. Vowel names are open syllables (애, 우, 의) and take
+# 가/를/는/와/로; consonant names are closed (비읍, 디귿) and take 이/을/은/과/으로 —
+# 리을 alone takes 로 like a vowel. Three glyphs are read two ways and the particle
+# settles them: ‘H’ is ㅐ in "‘H’와 ‘ㅔ’를 구분하지 못하고" but ㅂ in "‘H’이 ‘ㄴ’
+# 앞에서 ‘ㅁ’으로 바뀌는"; ‘E’ is ㄹ in "‘E’로 바뀐다" but ㄷ in "평파열음화에 의해
+# ‘E’으로"; ‘기’ is ㄱ in "‘기’은 ‘ㄴ’ 앞에 올 수 없다" but the ending -기 in "‘기’가
+# 쓰이면". Where the particle does not settle it, the glyph is left as it is.
+PARTICLE={'으로':'consonant','로':'rieul','가':'vowel','를':'vowel','는':'vowel','와':'vowel',
+          '이':'closed','을':'closed','은':'closed','과':'closed'}
+PARTICLE_AFTER=re.compile(r'\s*(으로|로|가|를|는|와|이|을|은|과)(?![가-힣])')
+# ‘E’ with 이/을/은/과, or with no particle at all, fits 리을 and 디귿 alike and the
+# passage does not settle it: a cue list was tried over all 156 such places and
+# turned out to read "‘E’ 불규칙 활용"(ㄹ 불규칙) and the sonorant list "‘ㄴ, E, ㅁ,
+# ㅇ’" as ㄷ, so those keep the commoner reading ㄹ. Only the particle decides.
+def two_way(key,after,window):
+    """The reading the particle settles; None to leave the glyph as it is."""
+    m=PARTICLE_AFTER.match(after);kind=PARTICLE[m.group(1)] if m else None
+    if key=='H':return 'ㅐ' if kind in {'vowel','rieul'} else 'ㅂ' if kind in {'consonant','closed'} else None
+    if key=='기':return 'ㄱ' if kind in {'consonant','closed'} else None
+    return 'ㄷ' if kind=='consonant' else 'ㄹ'
+TWO_WAY={'H','E','기'}
 JAMO_CUE=re.compile(r'음소|음운|변이\s?음|자음|모음|된소리|비음|유음|경음|평음|격음|마찰음|파열음|파찰음|후\s?음|순\s?음|치조|연구개|경구개|초성|중성|종성|받침|조음|구개음|음절|자모|글자|훈민정음|해례|발음|불청|불\s?탁|상형|가획')
 OPEN_QUOTE='‘“\'"'
 CLOSE_QUOTE='’”\'"'
@@ -310,9 +327,10 @@ def read_citations(text):
         nonlocal count
         body=m.group(2);items=[i.strip() for i in CITED_SPLIT.split(body)];hit=0;out=[]
         for key in items:
-            if key in JAMO:
-                named=BY_PARTICLE.get(key)
-                out.append(named[1] if named and text[m.end():].lstrip()[:len(named[0])]==named[0] else JAMO[key]);hit+=1
+            if key in TWO_WAY:
+                read=two_way(key,text[m.end():],text[max(0,m.start()-110):m.end()+80])
+                out.append(read or key);hit+=bool(read)
+            elif key in JAMO:out.append(JAMO[key]);hit+=1
             elif key in JAMO_WORD and JAMO_CUE.search(text[max(0,m.start()-100):m.end()+100]):out.append(JAMO_WORD[key]);hit+=1
             else:out.append(key)
         out=', '.join(out)

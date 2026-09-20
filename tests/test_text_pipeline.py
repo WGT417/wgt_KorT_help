@@ -118,8 +118,11 @@ class GlyphRepairTests(unittest.TestCase):
         self.assertEqual(correct_display('모음 ‘T’는 입술을 둥글게 오므린다.')[0],'모음 ‘ㅜ’는 입술을 둥글게 오므린다.')
         # A letter that starts a word is a word: the French title stays.
         self.assertEqual(correct_display("희곡 ‘L’enfer, c'est les autres’이다.")[1],0)
-        # ㅐ also comes out as H, but so does ㅂ, so H is left alone.
-        self.assertEqual(correct_display('단 모음 ‘ H ’와 ‘ ~l ’에서 차이가 난다.')[1],0)
+        # ㅐ also comes out as H, and so does ㅂ; the particle after it says which.
+        self.assertEqual(correct_display('단 모음 ‘ H ’와 ‘ ~l ’에서 차이가 난다.')[0],'단 모음 ‘ㅐ’와 ‘ ~l ’에서 차이가 난다.')
+        self.assertEqual(correct_display('‘ H ’이 ‘ L ’ 앞에서 ‘口’으로 바뀐다.')[0],'‘ㅂ’이 ‘ㄴ’ 앞에서 ‘ㅁ’으로 바뀐다.')
+        # No particle to settle it: left as the scan read it.
+        self.assertEqual(correct_display('음소 ‘ H ’ 및 그 변이 음')[1],0)
     def test_jamo_written_as_look_alike_hangul_is_named(self):
         from text_pipeline import correct_display
         # 책이 스스로 밝히는 읽기: 근=ㄹ, 닝=ㅂ, 人/λ=ㅅ, 。=ㅇ, 「=ㄱ.
@@ -149,6 +152,16 @@ class GlyphRepairTests(unittest.TestCase):
         self.assertEqual(correct_display('관형사형 ‘ -(으)2 ’ 뒤에 연결되는')[0],'관형사형 ‘ -(으)ㄹ’ 뒤에 연결되는')
         # 어미를 말하는 문장이 아니면 ‘눈’은 눈이다.
         self.assertEqual(correct_display('4 연에 나온 ‘눈’과 ‘매화 향기’의 대비')[1],0)
+    def test_a_letter_with_two_readings_follows_the_particle(self):
+        from text_pipeline import correct_display
+        # 리을은 '로', 디귿은 '으로'를 취한다.
+        self.assertEqual(correct_display('‘ E ’의 조음 방법을 닮아서 ‘ E ’로 바뀐다.')[0],'‘ㄹ’의 조음 방법을 닮아서 ‘ㄹ’로 바뀐다.')
+        self.assertEqual(correct_display('평 파열음화에 의해 ‘ E ’으로 바뀐다.')[0],'평 파열음화에 의해 ‘ㄷ’으로 바뀐다.')
+        # 이/은/과는 리을·디귿 둘 다 맞아 가릴 수 없으므로 흔한 쪽(ㄹ)을 유지한다.
+        self.assertEqual(correct_display('‘ E ’이 ‘ L ’으로 바뀐다.')[0],'‘ㄹ’이 ‘ㄴ’으로 바뀐다.')
+        # ‘기’는 자음 조사를 달았을 때만 ㄱ, 그 밖에는 명사형 어미 ‘-기’.
+        self.assertEqual(correct_display('국어에서 ‘ 기’은 ‘ L ’ 앞에 올 수 없다.')[0],'국어에서 ‘ㄱ’은 ‘ㄴ’ 앞에 올 수 없다.')
+        self.assertEqual(correct_display('(8나)처럼 ‘ 기’가 쓰이면 동작적 의미이다.')[1],0)
     def test_damage_is_judged_as_the_reader_sees_it(self):
         from passage_text import ocr_damage,shown_damage
         broken='관형사절은 관형사형 어미 느(의L ’이 붙어서 관형어로 쓰이는 절이다.'
