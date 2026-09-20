@@ -29,6 +29,8 @@ def table_verdict(rows):
     if sum(bool(re.fullmatch(r'[\d\s,.·\-~]+',c)) or bool(INDEX_ENTRY.search(c)) for c in cells)>len(cells)*.3:return '찾아보기·쪽번호'
     if sum(len(re.findall(r'[가-힣]',c))<=1 for c in cells)>len(cells)*.4:return '낱글자 칸'
     if max(len(r) for r in rows)>1 and sum(len(r)==1 for r in rows)>len(rows)*.4:return '칸이 흐트러짐'
+    known=corpus_words()
+    if known and any(len(w)>=7 and w not in known for w in re.findall(r'[가-힣]{2,}',text)):return '붙어 버린 긴 낱말'
     if strange_ratio(text)>.25 and len(re.findall(r'[가-힣]{2,}',text))>=8:return '없는 낱말'
     return 'keep'
 

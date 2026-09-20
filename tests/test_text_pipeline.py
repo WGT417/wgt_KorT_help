@@ -89,9 +89,11 @@ class GlyphRepairTests(unittest.TestCase):
         words=corrections()
         self.assertTrue(all(len(k)==len(v) for k,v in words.items()))
         self.assertNotIn('기지',words);self.assertNotIn('감지',words);self.assertNotIn('여지는',words)
+        # A whole word only: 지도히는 is left alone because 지도 is a word of these
+        # books, but the run the page printed on its own is corrected.
         if '히는' in words:
-            text,n=correct_display('독서를 지도히는 교사')
-            self.assertEqual(n,1);self.assertIn('지도하는' if '지도히는' in words else '히는',text if n==0 else text.replace('지도하는','지도하는'))
+            self.assertEqual(correct_display('독서를 지도 히는 교사'),('독서를 지도 하는 교사',1))
+            self.assertEqual(correct_display('독서를 지도히는 교사')[1],0)
         fixed,n=correct_display('자신의 생각을 말한다.')
         self.assertEqual((fixed,n),('자신의 생각을 말한다.',0))
     def test_hangul_pulled_into_a_latin_gloss_is_noise(self):
@@ -134,7 +136,19 @@ class GlyphRepairTests(unittest.TestCase):
         self.assertEqual(correct_display('‘괴, 귀’는 이중 모음으로 발음할 수 있다.')[0],'‘ㅚ, ㅟ’는 이중 모음으로 발음할 수 있다.')
         # 따옴표 안을 공백으로 쪼개면 시의 ‘천만 근’과 서지의 ‘ E rinnerung’이 자모가 된다.
         self.assertEqual(correct_display('‘천만 근’ 이라는 무게로 강조한 것이다.')[1],0)
-        self.assertEqual(correct_display('‘ E rinnerung’이라는 개념을 통해 설명한다.')[1],0)
+        # A bibliography's German title: not a jamo, and the stray space closes up.
+        self.assertEqual(correct_display('‘ E rinnerung’이라는 개념을 통해 설명한다.')[0],
+                         '‘ Erinnerung’이라는 개념을 통해 설명한다.')
+    def test_vowels_read_as_a_digit_a_hyphen_and_a_brace(self):
+        from text_pipeline import correct_display
+        self.assertEqual(correct_display('양순음 뒤에 오는 ‘-’에 적용된다.')[0],'양순음 뒤에 오는 ‘ㅡ’에 적용된다.')
+        self.assertEqual(correct_display('단 모음 ‘}’의 경우 발음할 때')[0],'단 모음 ‘ㅏ’의 경우 발음할 때')
+        self.assertEqual(correct_display('자음 앞의 ‘ 1 ’ 모음 역행 동화')[0],'자음 앞의 ‘ㅣ’ 모음 역행 동화')
+        # The same three glyphs are ㄱ inside a consonant list, and the list says so.
+        self.assertEqual(correct_display('‘1 , C , 동’의 구개 음화는 음운의 변동을 부른다.')[0],
+                         '‘1, C, ㅎ’의 구개 음화는 음운의 변동을 부른다.')
+        # Nothing to do with sounds: a numbered item stays a number.
+        self.assertEqual(correct_display('‘1’ 항목을 보라.')[1],0)
     def test_the_particle_tells_which_jamo_the_letter_names(self):
         from text_pipeline import correct_display
         # 리을로 / 디귿으로: 조사가 이름의 끝소리를 알려 준다.
@@ -214,7 +228,8 @@ class ReadingTextTests(unittest.TestCase):
         display='각각 동격 절， 관 계절로 줄여 이르기도한다. 쩌 (1 22)의 밑줄 부분'
         text,marks=tidy_display(raw,display,self.terms)
         self.assertEqual(marks,1)
-        self.assertEqual(text,'각각 동격 절， 관계절로 줄여 이르기도한다. (122)의 밑줄 부분')
+        # The page printed "이르기도 한다"; the spacing model closed it and it is put back.
+        self.assertEqual(text,'각각 동격 절， 관계절로 줄여 이르기도 한다. (122)의 밑줄 부분')
     def test_heading_footnote_number_is_dropped(self):
         from text_pipeline import tidy_display
         text,marks=tidy_display('4.3.3.2. 관형사절을안은문장39\n절이 관형사화되어','4.3.3.2. 관형사절을 안은 문장 39 절이 관형사화되어',self.terms)
@@ -283,6 +298,30 @@ class ReadingTextTests(unittest.TestCase):
         self.assertEqual(tidy_display('대화 참여자는','대화 참여자는',self.terms)[0],'대화 참여자는')
         # A two-syllable term only when split into two lone syllables.
         self.assertEqual(tidy_display('동격이다','동 격이다',self.terms)[0],'동 격이다')
+    def test_the_pages_own_spaces_are_put_back(self):
+        from text_pipeline import respaced,source_words
+        if not source_words():self.skipTest('data/source-words.json not built')
+        # 한국어표준문법 84쪽: one unreadable glyph and the model ran the clause together.
+        self.assertEqual(respaced('자음(子音， co nsonant)은 조음 과정에서 꽁기의 흐름이',
+                                  '자음(子音， co nsonant)은조음과정에서꽁기의 흐름이'),
+                         '자음(子音， co nsonant)은 조음 과정에서 꽁기의 흐름이')
+        self.assertEqual(respaced('이르기도 한다.','이르기도한다.'),'이르기도 한다.')
+        # The scan's own stray spaces stay closed: the books print these as one word.
+        self.assertEqual(respaced('보석처 럼 빛나는','보석처럼 빛나는'),'보석처럼 빛나는')
+        self.assertEqual(respaced('하나의 소설이 다.','하나의 소설이다.'),'하나의 소설이다.')
+        # A term the books write as one word is not torn apart again.
+        self.assertEqual(respaced('부사격 조사로서','부사격조사로서'),'부사격조사로서')
+    def test_latin_words_split_by_a_stray_space_are_joined(self):
+        from text_pipeline import join_latin,latin_words
+        if not latin_words():self.skipTest('data/source-words.json not built')
+        self.assertEqual(join_latin('자음(子音， co nsonant)은')[0],'자음(子音， consonant)은')
+        self.assertEqual(join_latin('이 형태(異形態， a llomorph)이다')[0],'이 형태(異形態， allomorph)이다')
+        # Broken more than once.
+        self.assertEqual(join_latin('심미적 독서(aesthetic read i ng)는')[0],'심미적 독서(aesthetic reading)는')
+        self.assertEqual(join_latin('의문문(interrogative se ntenc e )은')[0],'의문문(interrogative sentence )은')
+        # Two words the books both spell that way are left alone.
+        self.assertEqual(join_latin('the information structure of')[1],0)
+        self.assertEqual(join_latin('Chomsky 의 Syntactic Structures')[1],0)
 
 class DefinitionContextTests(unittest.TestCase):
     def test_following_sentences_stay_on_the_term(self):

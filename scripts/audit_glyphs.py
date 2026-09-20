@@ -21,6 +21,7 @@ from pathlib import Path
 from collections import Counter,defaultdict
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import core
+from text_pipeline import respaced
 from kiwipiepy import Kiwi
 
 # OCR shape confusions observed in this library: damaged syllable -> intended
@@ -28,7 +29,16 @@ from kiwipiepy import Kiwi
 # from a rarer real word (있을/있다, 기능하다/가능하다 differ by one syllable too),
 # so only shapes the scan actually confuses are listed and every word is still
 # put to the language model and the frequency test below.
-PAIRS={'히':'하','지':'자','볍':'법','괴':'과','영':'명','렉':'텍','럭':'텍','시':'사','둥':'등','디':'다','슴':'습','힐':'활','휠':'활','넘':'념','엽':'업','딴':'발','뭇':'뜻','갓':'것','깃':'것','밍':'명','정':'징','익':'악','볼':'불','섬':'심','겅':'경','펀':'된','히':'하','굽':'급','긍':'등','힌':'한','헤':'해','뎌':'더','츠':'초','치':'차','띠':'따','틀':'들','니':'나','샤':'서','졍':'정','딘':'단','딜':'달','텀':'럼','낱':'날','핸':'한','리':'라','당':'다','헝':'항','굉':'광','빙':'방','직':'작','잉':'있','잭':'책','싱':'상','앙':'양','칭':'창','멍':'명','퉁':'통'}
+PAIRS={'히':'하','지':'자','볍':'법','괴':'과','영':'명','렉':'텍','럭':'텍','시':'사','둥':'등','디':'다','슴':'습','힐':'활','휠':'활','넘':'념','엽':'업','딴':'발','뭇':'뜻','갓':'것','깃':'것','밍':'명','정':'징','익':'악','볼':'불','섬':'심','겅':'경','펀':'된','히':'하','굽':'급','긍':'등','힌':'한','헤':'해','뎌':'더','츠':'초','치':'차','띠':'따','틀':'들','니':'나','샤':'서','졍':'정','딘':'단','딜':'달','텀':'럼','낱':'날','핸':'한','리':'라','당':'다','헝':'항','굉':'광','빙':'방','직':'작','잉':'있','잭':'책','싱':'상','앙':'양','칭':'창','멍':'명','퉁':'통','꽁':'공'}
+# 꽁 is the only tense syllable here, and the rest of that family was tried and
+# thrown away: a plain consonant read as its tense twin looks like a promising
+# class (꽁기 for 공기) but this library is the wrong place for it. The grammar
+# and phonology books print tense syllables as their subject matter — 국적[국쩍],
+# 닿소[다쏘], 등-불[등뿔], 돋보기→[돋뽀기], 지+어도→[쩌도] — and the literature
+# books quote dialect and old spelling (‘뻐스 길 삼백 리’, 임꺽정, ‘궁글 뿔고’).
+# Of 56 corrections the gates accepted for 쩍·썽·쩌·쭈·쏘·뿔·뿐·씬·뻐·뽀·뜸, about
+# thirty were wrong (구뿐→구분 in ‘용언 구뿐 아니라’, 썽과→성과 in ‘눈 썽과 입가’,
+# 쩍힌→적힌 beside ‘찍히고 찍히고’). Do not reopen this without a per-book gate.
 MIN_GAIN=4.0      # language-model score gain required for the corrected word
 MIN_TARGET=3      # corrected word must already occur this often in the corpus
 # Damaged-looking forms that are real words in these books; never rewritten.
@@ -68,12 +78,39 @@ def term_correction(word,options,words,terms):
     return None
 FOREIGN=re.compile(r'[Ͱ-ϿЀ-ӿ￠-￦¢©«®»™\\]')
 
+# What the pages print as one word, read off the extracted text instead of off
+# the spacing model's output, so that text_pipeline.respace can tell the page's
+# own space ("나타나기도 한다") from one the scan invented ("보석처 럼"). Only
+# tokens with a neighbour on either side count: a line's first and last token
+# may be half a word the line break cut. Latin words are collected from Korean
+# prose alone, because the pages that came out as pure scan noise would
+# otherwise fill the list with ee/oe/ae.
+def printed_words(rows,minimum=3):
+    korean=Counter();latin=Counter()
+    for r in rows:
+        for line in r['raw'].split('\n'):
+            tokens=[t for t in re.split(r'[ \t]+',line.strip()) if t]
+            for t in tokens[1:-1]:
+                w=re.sub(r'^[^가-힣]+|[^가-힣]+$','',t)
+                if len(w)>=2:korean[w]+=1
+        shown=r['display'];marks=len(re.findall(r'\S',shown))
+        if marks>=40 and len(re.findall(r'[가-힣]',shown))/marks>=.35:
+            for w in re.findall(r'(?<![A-Za-z])[A-Za-z]{3,}(?![A-Za-z])',shown):latin[w.lower()]+=1
+    words=sorted(w for w,n in korean.items() if n>=minimum)
+    romans=sorted(w for w,n in latin.items() if n>=2)
+    (core.DATA/'source-words.json').write_text(json.dumps({'generated':time.strftime('%Y-%m-%d %H:%M'),
+        'rule':f'쪽에서 추출한 원문에서 줄 안쪽 어절로 {minimum}회 이상 나타난 한글 낱말과, 한글 본문 안에서 2회 이상 나타난 라틴 낱말. 띄어쓰기 모델이 지운 공백을 되살릴지 판단하는 데 쓴다',
+        'words':words,'latin':romans},ensure_ascii=False),encoding='utf-8')
+    print('printed vocabulary',len(words),'Korean word forms,',len(romans),'Latin word forms',flush=True)
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--limit',type=int,default=0);args=parser.parse_args()
     start=time.time();kiwi=Kiwi(num_workers=4)
     with core.connect() as db:
-        rows=db.execute("SELECT x.display,x.kind,b.title,p.pdf_page FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.kind IN ('body','table','note') AND b.category!='참고자료'").fetchall()
+        rows=db.execute("SELECT x.raw,x.display,x.kind,b.title,p.pdf_page FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id WHERE x.kind IN ('body','table','note') AND b.category!='참고자료'").fetchall()
     if args.limit:rows=rows[:args.limit]
+    printed_words(rows)
+    rows=[{**dict(r),'display':respaced(r['raw'],r['display'])} for r in rows]
     foreign=Counter();foreign_book=defaultdict(Counter);foreign_ctx=defaultdict(list);sentences_with_foreign=0
     words=Counter()
     for r in rows:

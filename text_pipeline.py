@@ -111,6 +111,62 @@ SURNAMES='김이박최정강조윤장임한오서신권황안송류전홍고문�
 # A lone syllable before a term-looking run is usually a word of its own:
 # 이 형태 is "this form", not 이형태.
 STANDALONE=SENTENCE_INITIAL|set('것수등때데뿐바중앞뒤속밑곳적줄채듯양만번개명권쪽장절말글책뜻법')
+# The spacing model is given a paragraph with its line breaks closed up, so it
+# re-spaces text the page had already spaced, and where one glyph defeats it
+# ("꽁기" for 공기) it runs a whole clause together: "…은 조음 과정에서 꽁기의" came
+# back as "…은조음과정에서꽁기의". A space printed inside a line is the book's own
+# typography and is put back, unless the two words it separates are a form the
+# books themselves print as one ("보석처 럼", "소설이 다" — those spaces are the
+# scan's, not the page's). A single syllable on either side is left to the model,
+# because that is the shape a scan's stray space makes, except inside a run the
+# model has plainly derailed on.
+RESPACE_RUN=8
+def respace(text,gaps,raw_gaps,keys=(),longest=0):
+    """Glyph positions where the page printed a space and the spacing model
+    closed it up. A position inside a term the books write as one word is left
+    closed, so 부사격 조사 stays 부사격조사."""
+    known=source_words()
+    if not known:return set()
+    bounds=[0]+[i for i in range(1,len(text)) if raw_gaps[i]]+[len(text)]
+    token={q:(a,b) for a,b in zip(bounds,bounds[1:]) for q in range(a,b)}
+    out=set()
+    for i in range(1,len(text)):
+        if gaps[i] or '\n' in raw_gaps[i] or not re.search(r'[ \t]',raw_gaps[i]):continue
+        if not ('가'<=text[i-1]<='힣' and '가'<=text[i]<='힣'):continue
+        start=token[i-1][0];end=token[i][1]
+        left=re.sub(r'[^가-힣]','',text[start:i]);right=re.sub(r'[^가-힣]','',text[i:end])
+        if left+right in known:continue
+        if len(left)<=1 or len(right)<=1:
+            a=i
+            while a and not gaps[a]:a-=1
+            b=i
+            while b<len(text)-1 and not gaps[b+1]:b+=1
+            if sum('가'<=c<='힣' for c in text[a:b+1])<RESPACE_RUN:continue
+        out.add(i)
+    if out and keys:
+        trial=list(gaps)
+        for q in out:trial[q]=' '
+        for p,term in term_starts(text,trial,raw_gaps,keys,longest):out-=set(range(p+1,p+len(term)))
+    return out
+
+_guard={}
+def respace_terms(keys,longest):
+    """The term list that protects a join, cached: the index terms plus TERMS."""
+    if _guard.get('keys') is not keys:
+        _guard.update(keys=keys,guard=keys|frozenset(TERMS),longest=max(longest,max(map(len,TERMS))))
+    return _guard['guard'],_guard['longest']
+
+def respaced(raw,display):
+    """`display` with the spaces the page printed on the line put back."""
+    if not raw or not display or compact(raw)!=compact(display):return display
+    text,gaps,trailing=glyph_gaps(display)
+    raw_gaps=glyph_gaps(raw)[1]
+    keys,longest=respace_terms(*joined_terms())
+    split=respace(text,gaps,raw_gaps,keys,longest)
+    if not split:return display
+    for q in split:gaps[q]=' '
+    return ''.join(gaps[g]+ch for g,ch in enumerate(text))+trailing
+
 def tidy_display(raw,display,terms=None,misread=None):
     """Reading text for the screen. Footnote marks and the books' own
     cross-reference marks are dropped and the punctuation they took with them is
@@ -130,6 +186,9 @@ def tidy_display(raw,display,terms=None,misread=None):
     marks={at[i]:(r if i==a else '') for a,b,r in spans for i in range(a,b) if i in at}
     keys,longest=terms or joined_terms()
     misread=misread_terms() if misread is None else misread
+    # The page's own spaces first: a word the model ran together is not a word
+    # the corrections below can recognise ("…에서꽁기의" only becomes 꽁기의 here).
+    for q in respace(text,gaps,raw_gaps,*respace_terms(keys,longest)):gaps[q]=' '
     joined=set();done=0;fixed=0
     if misread:
         chars=list(text);sizes=sorted({len(k) for k in misread},reverse=True)
@@ -211,6 +270,24 @@ def corrections():
         _corrections.update(stamp=stamp,words={w:v['to'] for w,v in words.items() if len(v['to'])==len(w)})
     return _corrections['words']
 
+_printed={'stamp':None,'words':frozenset(),'latin':frozenset()}
+def _printed_lists():
+    """What the pages themselves print as one word, read off the extracted text
+    rather than off the spacing model's output (scripts/audit_glyphs.py counts it)."""
+    from pathlib import Path
+    path=Path(__file__).resolve().parent/'data'/'source-words.json'
+    stamp=path.stat().st_mtime_ns if path.exists() else None
+    if stamp!=_printed['stamp']:
+        data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+        _printed.update(stamp=stamp,words=frozenset(data.get('words',())),latin=frozenset(data.get('latin',())))
+    return _printed
+def source_words():
+    """Korean word forms the books print as one word within a line."""
+    return _printed_lists()['words']
+def latin_words():
+    """Latin word forms the books print inside their Korean prose."""
+    return _printed_lists()['latin']
+
 _vocabulary={'stamp':None,'words':frozenset()}
 def corpus_words():
     """Word forms the 26 books repeat (scripts/audit_glyphs.py counts them)."""
@@ -274,6 +351,18 @@ def two_way(key,after,window):
     return 'ㄷ' if kind=='consonant' else 'ㄹ'
 TWO_WAY={'H','E','기'}
 JAMO_CUE=re.compile(r'음소|음운|변이\s?음|자음|모음|된소리|비음|유음|경음|평음|격음|마찰음|파열음|파찰음|후\s?음|순\s?음|치조|연구개|경구개|초성|중성|종성|받침|조음|구개음|음절|자모|글자|훈민정음|해례|발음|불청|불\s?탁|상형|가획')
+# The vowels the phonology books cite come out as a digit, a hyphen and a brace:
+# "‘1’ 모음 역행 동화", "양순음 뒤에 오는 ‘-’", "단 모음 ‘}’". All three are also
+# what this scan leaves where ㄱ stood inside a consonant list, and there the rest
+# of the list says so — "‘1, C, 동’의 구개음화" is ㄱㄷㅎ, 평파열음화의 "‘님, C, -,’"
+# is ㅂㄷㄱ. So they are read as vowels only where no other item of the same
+# quotation is a consonant, and only where the line is about sounds.
+VOWEL_GLYPH={'1':'ㅣ','-':'ㅡ','}':'ㅏ'}
+CONSONANT_JAMO=set('ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ')
+def consonant_list(items):
+    """Whether a quoted list names a consonant beside the doubtful glyphs."""
+    return any(JAMO.get(k,'') in CONSONANT_JAMO or JAMO_WORD.get(k,'') in CONSONANT_JAMO
+               or any(c in CONSONANT_JAMO for c in k) for k in items if k not in VOWEL_GLYPH)
 OPEN_QUOTE='‘“\'"'
 CLOSE_QUOTE='’”\'"'
 QUOTED=re.compile('(['+OPEN_QUOTE+'])([^'+OPEN_QUOTE+CLOSE_QUOTE+r'\n]{0,40}?)(['+CLOSE_QUOTE+'])')
@@ -326,8 +415,13 @@ def read_citations(text):
         """Each item of "‘님, 표, 배, 口’" on its own; a run of letters is a word."""
         nonlocal count
         body=m.group(2);items=[i.strip() for i in CITED_SPLIT.split(body)];hit=0;out=[]
+        sounds=None
         for key in items:
-            if key in TWO_WAY:
+            if key in VOWEL_GLYPH:
+                if sounds is None:
+                    sounds=not consonant_list(items) and bool(JAMO_CUE.search(text[max(0,m.start()-100):m.end()+100]))
+                out.append(VOWEL_GLYPH[key] if sounds else key);hit+=sounds
+            elif key in TWO_WAY:
                 read=two_way(key,text[m.end():],text[max(0,m.start()-110):m.end()+80])
                 out.append(read or key);hit+=bool(read)
             elif key in JAMO:out.append(JAMO[key]);hit+=1
@@ -344,12 +438,40 @@ def read_citations(text):
     # The space the source left between the jamo and the closing quote ("‘-(으)ㄴ ’").
     return re.sub(r'([ㄱ-ㅣ])[ \t]+(['+CLOSE_QUOTE+'])',r'\1\2',text),count
 
+# A stray space inside the Latin glosses these books set beside their terms:
+# "자음(子音， co nsonant)", "이 형태(異形態， a llomorph)", "음운적 단어(phonologic
+# al word)". The library's own spelling of the word says where the space does not
+# belong; two words that are both spelled that way elsewhere are left alone, so
+# "in formation" and "an other" stay as they are.
+LATIN_RUN=re.compile(r'(?<![A-Za-z])[A-Za-z]+(?:[ ][A-Za-z]+)+(?![A-Za-z])')
+def join_latin(text):
+    """Latin words the scan broke with a space, put back. Returns (text, joins).
+    A word can be broken more than once ("se ntenc e", "read i ng"), so up to
+    four pieces in a row are joined, longest first, and every piece after the
+    first has to be lower case."""
+    known=latin_words()
+    if not known or not re.search(r'[A-Za-z] [a-z]',text):return text,0
+    count=0
+    def fuse(m):
+        nonlocal count
+        parts=m.group().split(' ');out=[];i=0
+        while i<len(parts):
+            for n in range(min(4,len(parts)-i),1,-1):
+                group=parts[i:i+n];whole=''.join(group)
+                if (all(p[:1].islower() for p in group[1:]) and len(whole)>=4
+                        and whole.lower() in known and not all(p.lower() in known for p in group)):
+                    out.append(whole);count+=1;i+=n;break
+            else:out.append(parts[i]);i+=1
+        return ' '.join(out)
+    return LATIN_RUN.sub(fuse,text),count
+
 def correct_display(text):
     """Replace known OCR-damaged words for reading. Returns (text, number of replacements).
     Source text, excerpts and citations are never changed; only what is shown."""
     if not text:return text,0
     text=re.sub(r'(?<=[가-힣’”)]),(?=\S)',', ',re.sub(r'\s+([,:;)?!])',r'\1',text.translate(PLAIN)))
     text,jamo=read_citations(text)
+    text,latin=join_latin(text);jamo+=latin
     words=corrections()
     if not words:return text,jamo
     count=jamo

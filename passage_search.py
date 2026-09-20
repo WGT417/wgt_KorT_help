@@ -1,7 +1,7 @@
 """Rank explanatory passages, not pages that merely contain query words."""
 import math,re,itertools
 from collections import Counter
-from text_pipeline import compact,VERSION,restore_terms,correct_display,tidy_display,split_heading,strange_ratio
+from text_pipeline import compact,VERSION,restore_terms,correct_display,tidy_display,split_heading,strange_ratio,corpus_words
 from passage_text import best_window,clean_blocks,noise,align,suspect_segments
 
 def table_rows(raw,display):
@@ -27,7 +27,11 @@ def readable_table(rows):
     followed by page numbers), 차례 dot leaders, the 판권지, and the pages where
     the scan returned single glyphs instead of words. It also drops the tables
     whose words the library never repeats, which is what a badly scanned table
-    looks like (인해돼스트기반입기 복합g씩텍스트읽기)."""
+    looks like (인해돼스트기반입기 복합g씩텍스트읽기). A long word no book repeats
+    is the surest sign of that: a real Korean word of seven syllables or more
+    is a term the books use again, so 인해돼스트기반입기, 대명사장소표시 and the
+    colophon's 지은이정재찬최인자김근호 are runs the scan never separated, while
+    the rare short words of a good table (레지스터, 멀티태스킹) are left alone."""
     cells=[c for row in rows for c in row]
     if not cells:return False
     text=' '.join(cells);body=re.sub(r'\s','',text)
@@ -38,6 +42,8 @@ def readable_table(rows):
     if sum(len(re.findall(r'[가-힣]',c))<=1 for c in cells)>len(cells)*.4:return False
     # Columns the scan tore apart leave single-cell rows among the real ones.
     if max(len(r) for r in rows)>1 and sum(len(r)==1 for r in rows)>len(rows)*.4:return False
+    known=corpus_words()
+    if known and any(len(w)>=7 and w not in known for w in re.findall(r'[가-힣]{2,}',text)):return False
     return strange_ratio(text)<=.25 or len(re.findall(r'[가-힣]{2,}',text))<8
 
 def layout_source(db,page_id):
