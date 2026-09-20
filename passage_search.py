@@ -56,7 +56,8 @@ def layout_source(db,page_id):
             segments=[]
             for seg in suspect_segments(display):
                 text,n=correct_display(seg['text']);fixed+=n
-                segments.append({'text':text,'suspect':seg['suspect']})
+                # Doubtful until corrected is not doubtful: judged as it is shown.
+                segments.append({'text':text,'suspect':seg['suspect'] and bool(noise(text))})
             if segments:reading.append({'kind':'body','ordinal':r['ordinal'],'heading':correct_display(heading)[0],'text':' '.join(x['text'] for x in segments),'segments':segments,'corrections':fixed})
         elif r['kind']=='table':
             cells=table_rows(r['raw'],r['display'])

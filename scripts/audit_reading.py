@@ -14,7 +14,7 @@ from collections import Counter,defaultdict
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import core
-from text_pipeline import VERSION,compact,restore_terms,correct_display,tidy_display,strange_ratio,corpus_words
+from text_pipeline import VERSION,compact,restore_terms,correct_display,tidy_display,strange_ratio,corpus_words,read_citations
 from passage_text import chunks,noise,ocr_damage
 from passage_search import table_rows,readable_table,PRINTED,INDEX_ENTRY
 
@@ -40,7 +40,7 @@ def main():
         rows=db.execute("""SELECT x.id,x.kind,x.raw,x.display,b.title,b.category,p.pdf_page
           FROM passages x JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id
           WHERE b.category!='참고자료' AND x.version=? ORDER BY b.category,b.title,p.pdf_page,x.ordinal""",(VERSION,)).fetchall()
-    books=defaultdict(lambda:{'passages':0,'excerpts':0,'damaged':0,'corrected':0,'tables':0,'tables_shown':0})
+    books=defaultdict(lambda:{'passages':0,'excerpts':0,'damaged':0,'corrected':0,'citations':0,'tables':0,'tables_shown':0})
     reasons=Counter();kinds_seen=Counter();damaged_samples=defaultdict(list);dropped_samples=defaultdict(list);kept_samples=[]
     def keep_sample(bucket,item,seen):
         """One sample per bucket per book, so the report is not all one book."""
@@ -59,6 +59,7 @@ def main():
             continue
         for excerpt,text in chunks(r['raw'],r['display']):
             shown,marks=tidy_display(excerpt,restore_terms(text))
+            b['citations']+=read_citations(shown)[1]
             shown,fixed=correct_display(shown)
             b['excerpts']+=1;b['corrected']+=fixed
             kinds=sorted(set(ocr_damage(shown)+(['noise'] if noise(shown) else [])))
@@ -71,10 +72,10 @@ def main():
             'samples':{'damaged_excerpts':{k:v for k,v in damaged_samples.items()},'tables_shown':kept_samples,'tables_dropped':{k:v for k,v in dropped_samples.items()}}}
     (core.DATA/'reading-audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=1),encoding='utf-8')
     total=lambda k:sum(b[k] for b in report['books'])
-    print(f"\n{'책':34s} {'발췌':>6s} {'깨짐':>6s} {'교정':>6s} {'표':>5s} {'표표시':>6s}")
+    print(f"\n{'책':34s} {'발췌':>6s} {'깨짐':>6s} {'교정':>6s} {'자모':>6s} {'표':>5s} {'표표시':>6s}")
     for b in report['books']:
-        print(f"{b['title'][:33]:34s} {b['excerpts']:6d} {b['damaged']:6d} {b['corrected']:6d} {b['tables']:5d} {b['tables_shown']:6d}")
-    print(f"{'합계':34s} {total('excerpts'):6d} {total('damaged'):6d} {total('corrected'):6d} {total('tables'):5d} {total('tables_shown'):6d}")
+        print(f"{b['title'][:33]:34s} {b['excerpts']:6d} {b['damaged']:6d} {b['corrected']:6d} {b['citations']:6d} {b['tables']:5d} {b['tables_shown']:6d}")
+    print(f"{'합계':34s} {total('excerpts'):6d} {total('damaged'):6d} {total('corrected'):6d} {total('citations'):6d} {total('tables'):5d} {total('tables_shown'):6d}")
     print('\n발췌 깨짐 유형:',dict(kinds_seen.most_common()))
     print('표 판정:',dict(reasons.most_common()))
     print(f"({report['seconds']}s) data/reading-audit.json")

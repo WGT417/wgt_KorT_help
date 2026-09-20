@@ -1,6 +1,6 @@
 """Contiguous sentence excerpts with reversible offsets to extracted source."""
 import re
-from text_pipeline import compact,restore_terms
+from text_pipeline import compact,restore_terms,correct_display
 
 # Greek/Cyrillic letters, currency and trademark signs, backslashes: OCR
 # misreads of Hangul strokes, never legitimate inside Korean prose here.
@@ -52,6 +52,12 @@ def ocr_damage(text):
     if re.search(r'[가-힣]{18,}',text):kinds.append('unspaced')
     if BROKEN_GLOSS.search(text):kinds.append('hanja')
     return kinds
+
+def shown_damage(text):
+    """ocr_damage as the reader meets it, after the display corrections: a
+    sentence whose jamo citations were read back ("‘-(으)ㄴ’, ‘-는’") is no longer
+    damaged, and can stand as a definition."""
+    return ocr_damage(correct_display(text)[0])
 
 def suspect_segments(display):
     """Split reading text into sentences, marking those with visible OCR damage.

@@ -16,7 +16,7 @@ from collections import Counter,defaultdict
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import core
 from text_pipeline import compact,restore_terms,tidy_display,glyph_gaps,term_starts,split_heading,SENTENCE_INITIAL,TERMS,VERSION
-from passage_text import SENTENCE_END,noise,ocr_damage
+from passage_text import SENTENCE_END,noise,shown_damage
 from term_index import definition_score,DEFINITION
 
 # Page-number groups such as "31", "54, 76", "296-298". The text between two
@@ -108,7 +108,7 @@ def with_context(sentences,i,key):
     for t in sentences[i+1:i+3]:
         if t['passage']!=s['passage'] or t['skip'] or t['kind']!=s['kind']:break
         text=re.sub(r'^(?:\[덧붙임\s*\d+\]\.?|\d{1,3}\s*\)|\d{1,3}(?=\s+[가-힣]))\s*','',t['text'])
-        if ocr_damage(text) or ASIDE.search(text) or FRAGMENT.match(text) or re.search(r"\(\s*\d{1,3}\s*[가-하]?(?:\s*[~,，-]\s*[가-하])?\s*['′]?\)",text):break
+        if shown_damage(text) or ASIDE.search(text) or FRAGMENT.match(text) or re.search(r"\(\s*\d{1,3}\s*[가-하]?(?:\s*[~,，-]\s*[가-하])?\s*['′]?\)",text):break
         if key not in key_of(text) and not CARRIES.match(text):break
         if size+len(text)>420:break
         more.append(text);size+=len(text)
@@ -162,7 +162,7 @@ def library_definitions(db,terms,cache,joined,misread,longer):
             if s['skip']:continue
             for key in defined_keys(s['text'],keys,longest):
                 score=definition_score(s['text'],key,longer(key))-3*(s['kind']=='note')
-                if score<9 or ocr_damage(s['text']):continue
+                if score<9 or shown_damage(s['text']):continue
                 slot=(key,p['title'])
                 if slot not in best or score>best[slot]['score']:
                     quote,more=with_context(sentences,i,key)
@@ -370,7 +370,7 @@ def main():
             for s in entry['sources']:
                 if s['page_id'] not in cache:cache[s['page_id']]=page_sentences(db,s['page_id'],joined_terms,misread)
                 s['quote'],s['more'],s['score']=defining_quote(cache[s['page_id']],key,longer(key))
-                if s['quote']:s['ocr']=ocr_damage(s['quote'])
+                if s['quote']:s['ocr']=shown_damage(s['quote'])
                 if not s['more']:del s['more']
                 n+=1
             if n%2000<len(entry['sources']):print('quotes',n,flush=True)

@@ -237,27 +237,101 @@ def strange_ratio(text):
 # looks like a space before the comma.
 PLAIN=str.maketrans({'，':',','：':':','；':';','（':'(','）':')','．':'.','？':'?','！':'!','～':'~'})
 
-# The grammar books name a jamo by printing it in quotes, and this scan reads
-# three of them as Latin capitals: ㄹ as E, ㄴ as L, ㅜ as T. The books' own
-# sentences settle which is which — "‘E’의 비음화는 ‘E’이 ‘L’으로 바뀌는 현상"
-# is ㄹ 비음화, "‘T’는 입술을 둥글게 오므리며" is ㅜ — and 437, 271 and 52 quoted
-# letters across the library read that way. ㅐ is left alone: it comes out as H,
-# but so does ㅂ ("‘H’이라는 음소는 음절의 초성에 놓일 때"), and nothing in the
-# line says which. A letter followed by more letters is a word, not a jamo, so
-# the French title ‘L’enfer, c'est les autres’ stays as it is.
-JAMO={'E':'ㄹ','L':'ㄴ','T':'ㅜ'}
-QUOTED_JAMO=re.compile(r'(?<![A-Za-z])([‘\'"“])\s*([ELT])\s*([’\'"”])(?![A-Za-z])')
+# The grammar books cite a jamo by printing it in quotes, and this scan reads the
+# glyph as something else. The books' own sentences settle each reading: "‘E’의
+# 비음화는 ‘E’이 ‘L’으로 바뀌는 현상" and "‘근’의 비음화를 가리키는 다른 용어" are both
+# ㄹ; "‘T’는 입술을 둥글게 오므리며" is ㅜ; "국어의 마찰음에는 ‘人 송’이 있다" is ㅅ and
+# ㅎ; "‘님, 표, 배, 口’이 양순음에 속한" is ㅂ ㅍ ㅃ ㅁ. ㅐ is left alone: it comes out
+# as H, but so does ㅂ ("‘H’이라는 음소는 음절의 초성에 놓일 때"), and nothing in the
+# line says which. A letter followed by more letters is a word, not a jamo, so the
+# French title ‘L’enfer, c'est les autres’ stays as it is.
+JAMO={'E':'ㄹ','L':'ㄴ','T':'ㅜ','근':'ㄹ','己':'ㄹ','口':'ㅁ','人':'ㅅ','λ':'ㅅ','。':'ㅇ','「':'ㄱ','亡':'ㄷ','닝':'ㅂ'}
+# These stand for a jamo as well, but they are also words of their own (만해의
+# ‘님’, 시경의 ‘송’, ‘눈’과 ‘매화 향기’), so they are read as jamo only where the
+# sentence is talking about sounds and letters ("‘괴, 귀’는 이중 모음으로 발음할
+# 수 있다", "국어의 후음에는 ‘송’이 존재한다").
+JAMO_WORD={'님':'ㅂ','표':'ㅍ','송':'ㅎ','동':'ㅎ','승':'ㅎ','종':'ㅎ','괴':'ㅚ','귀':'ㅟ'}
+# The particle after a citation names the jamo: ‘ㄹ’로 is 리을로, but ‘ㄷ’으로 is
+# 디귿으로. So a quoted E followed by 으로 is ㄷ, not ㄹ — "평파열음화에 의해 ‘E’으로
+# 바뀐다", "맞춤법 제7항 ‘E’으로 적을 근거가 없는", "‘E’으로 끝나는 모든 형태소". All
+# 28 such places in the library are ㄷ; the 43 with 로 are ㄹ.
+BY_PARTICLE={'E':('으로','ㄷ')}
+JAMO_CUE=re.compile(r'음소|음운|변이\s?음|자음|모음|된소리|비음|유음|경음|평음|격음|마찰음|파열음|파찰음|후\s?음|순\s?음|치조|연구개|경구개|초성|중성|종성|받침|조음|구개음|음절|자모|글자|훈민정음|해례|발음|불청|불\s?탁|상형|가획')
+OPEN_QUOTE='‘“\'"'
+CLOSE_QUOTE='’”\'"'
+QUOTED=re.compile('(['+OPEN_QUOTE+'])([^'+OPEN_QUOTE+CLOSE_QUOTE+r'\n]{0,40}?)(['+CLOSE_QUOTE+'])')
+# Only a comma list is split into items. Splitting on spaces as well would read
+# the ‘천만 근’ of a poem and the ‘ E rinnerung’ of a bibliography as jamo.
+CITED_SPLIT=re.compile(r'[，,、]')
+
+# "‘-(으)ㄴ’" comes back as "느(의L ’" and "‘-(으)ㄹ’" as "까으)2 ’": the opening quote
+# and the hyphen were read as one syllable, the closing paren was swallowed by the
+# vowel ("(으)" left as "(의"), and the jamo itself became a letter or a digit.
+CITED_JAMO={'L':'ㄴ','2':'ㄹ','근':'ㄹ','己':'ㄹ','E':'ㄹ','口':'ㅁ','디':'ㅁ','0':'ㅁ','人':'ㅅ','λ':'ㅅ'}
+MEDIAL=re.compile(r'([(（]\s*)[으의](\s*[)）]?\s*)(['+''.join(CITED_JAMO)+r'])(?![A-Za-z0-9])')
+OPENERS='느노니나내냐가거까카키개ι←'
+CITED_OPEN=re.compile(r'(?<![(（])(['+OPENERS+r'])\s*[(（]?\s*([으어])\s*[)）]')
+# ‘-는’ read as ‘눈’, which is a word of its own, so the sentence has to be naming endings.
+CITED_WORD={'눈':'-는'}
+CITED_CUE=re.compile(r'어미|관형사형|선어말')
+CITED_WORD_QUOTE=re.compile('(['+OPEN_QUOTE+r'])\s*('+'|'.join(CITED_WORD)+r')\s*(['+CLOSE_QUOTE+'])')
+
+# A cited ending keeps the glyph inside it: ‘- L 다’ is ‘-ㄴ다’, ‘-(으)口’ is ‘-(으)ㅁ’.
+# The hyphen or the paren is what says it is a citation; ‘천만 근’ has neither, and a
+# run of three syllables makes it a phrase rather than a form.
+CITED_FORM=re.compile(r'[-—~/()（）\s가-힣ㄱ-ㅣ'+''.join(JAMO)+r']{1,14}')
+
+def read_citations(text):
+    """The jamo and the endings the grammar books cite, read back for the screen.
+    Returns (text, citations read). Nothing outside a citation is touched."""
+    count=0
+    def medial(m):
+        """"-(의L ’" and "-(으)2 ’" are both -(으)ㄹ/ㄴ: the paren the vowel swallowed returns."""
+        nonlocal count;count+=1
+        tail=m.group(2) if ')' in m.group(2) or '）' in m.group(2) else ')'+m.group(2)
+        return m.group(1)+'으'+tail+CITED_JAMO[m.group(3)]
+    text=MEDIAL.sub(medial,text)
+    def opener(m):
+        """Only where the citation closes: "선어말 어미가 으)시-’를" is "선어말 어미 ‘-(으)시-’를"."""
+        nonlocal count
+        tail=text[m.end():m.end()+14]
+        if '’' not in tail and "'" not in tail:return m.group(0)
+        count+=1
+        space=' ' if m.start() and not text[m.start()-1].isspace() else ''
+        return space+'‘-('+m.group(2)+')'
+    text=CITED_OPEN.sub(opener,text)
+    def word(m):
+        nonlocal count
+        if not CITED_CUE.search(text[max(0,m.start()-70):m.end()+70]):return m.group(0)
+        count+=1;return m.group(1)+CITED_WORD[m.group(2)]+m.group(3)
+    text=CITED_WORD_QUOTE.sub(word,text)
+    def quoted(m):
+        """Each item of "‘님, 표, 배, 口’" on its own; a run of letters is a word."""
+        nonlocal count
+        body=m.group(2);items=[i.strip() for i in CITED_SPLIT.split(body)];hit=0;out=[]
+        for key in items:
+            if key in JAMO:
+                named=BY_PARTICLE.get(key)
+                out.append(named[1] if named and text[m.end():].lstrip()[:len(named[0])]==named[0] else JAMO[key]);hit+=1
+            elif key in JAMO_WORD and JAMO_CUE.search(text[max(0,m.start()-100):m.end()+100]):out.append(JAMO_WORD[key]);hit+=1
+            else:out.append(key)
+        out=', '.join(out)
+        if not hit and CITED_FORM.fullmatch(body) and re.search(r'[-—(（]',body) and not re.search(r'[가-힣]{3,}',body):
+            hit=sum(ch in JAMO for ch in body);out=''.join(JAMO.get(ch,ch) for ch in body)
+        if not hit:return m.group(0)
+        if re.fullmatch(r'\s*[A-Za-z]\s*',body) and (re.match(r'[A-Za-z]',text[m.end():m.end()+1] or ' ') or re.search(r'[A-Za-z]$',text[:m.start()])):return m.group(0)
+        count+=hit
+        return m.group(1)+out+m.group(3)
+    text=QUOTED.sub(quoted,text)
+    # The space the source left between the jamo and the closing quote ("‘-(으)ㄴ ’").
+    return re.sub(r'([ㄱ-ㅣ])[ \t]+(['+CLOSE_QUOTE+'])',r'\1\2',text),count
 
 def correct_display(text):
     """Replace known OCR-damaged words for reading. Returns (text, number of replacements).
     Source text, excerpts and citations are never changed; only what is shown."""
     if not text:return text,0
     text=re.sub(r'(?<=[가-힣’”)]),(?=\S)',', ',re.sub(r'\s+([,:;)?!])',r'\1',text.translate(PLAIN)))
-    jamo=0
-    def name(m):
-        nonlocal jamo
-        jamo+=1;return m.group(1)+JAMO[m.group(2)]+m.group(3)
-    text=QUOTED_JAMO.sub(name,text)
+    text,jamo=read_citations(text)
     words=corrections()
     if not words:return text,jamo
     count=jamo

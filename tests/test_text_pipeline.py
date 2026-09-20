@@ -120,6 +120,40 @@ class GlyphRepairTests(unittest.TestCase):
         self.assertEqual(correct_display("희곡 ‘L’enfer, c'est les autres’이다.")[1],0)
         # ㅐ also comes out as H, but so does ㅂ, so H is left alone.
         self.assertEqual(correct_display('단 모음 ‘ H ’와 ‘ ~l ’에서 차이가 난다.')[1],0)
+    def test_jamo_written_as_look_alike_hangul_is_named(self):
+        from text_pipeline import correct_display
+        # 책이 스스로 밝히는 읽기: 근=ㄹ, 닝=ㅂ, 人/λ=ㅅ, 。=ㅇ, 「=ㄱ.
+        self.assertEqual(correct_display('‘ 근’의 비음화를 가리키는 다른 용어')[0],'‘ㄹ’의 비음화를 가리키는 다른 용어')
+        self.assertEqual(correct_display('국어의 마찰음에는 ‘ 人 ’이 있다.')[0],'국어의 마찰음에는 ‘ㅅ’이 있다.')
+        # 낱말이기도 한 글자는 소리·글자를 말하는 문장에서만 자모로 읽는다.
+        self.assertEqual(correct_display('국어의 후 음에는 ‘송’이 존재한다.')[0],'국어의 후 음에는 ‘ㅎ’이 존재한다.')
+        self.assertEqual(correct_display('‘송’은 종묘의 제사에서 쓰는 악 시를 말한다.')[1],0)
+        self.assertEqual(correct_display('‘괴, 귀’는 이중 모음으로 발음할 수 있다.')[0],'‘ㅚ, ㅟ’는 이중 모음으로 발음할 수 있다.')
+        # 따옴표 안을 공백으로 쪼개면 시의 ‘천만 근’과 서지의 ‘ E rinnerung’이 자모가 된다.
+        self.assertEqual(correct_display('‘천만 근’ 이라는 무게로 강조한 것이다.')[1],0)
+        self.assertEqual(correct_display('‘ E rinnerung’이라는 개념을 통해 설명한다.')[1],0)
+    def test_the_particle_tells_which_jamo_the_letter_names(self):
+        from text_pipeline import correct_display
+        # 리을로 / 디귿으로: 조사가 이름의 끝소리를 알려 준다.
+        self.assertEqual(correct_display('‘ L ’은 ‘ E ’의 조음 방법을 닮아서 ‘ E ’로 바뀐다.')[0],
+                         '‘ㄴ’은 ‘ㄹ’의 조음 방법을 닮아서 ‘ㄹ’로 바뀐다.')
+        self.assertEqual(correct_display('평 파열음화에 의해 ‘ E ’으로 바뀌어야한다.')[0],'평 파열음화에 의해 ‘ㄷ’으로 바뀌어야한다.')
+        self.assertEqual(correct_display('‘ E ’이 ‘ E ’으로 바뀐 것이 아니고 ‘ E ’이 탈락한 것이다.')[0],
+                         '‘ㄹ’이 ‘ㄷ’으로 바뀐 것이 아니고 ‘ㄹ’이 탈락한 것이다.')
+    def test_cited_endings_get_their_quote_and_paren_back(self):
+        from text_pipeline import correct_display
+        text,n=correct_display('관형사절은 용언 어간에 관형사형 어미 느(의L ’， ‘눈’， ‘-(으)근’， ‘-던’이 붙어서 관형어로 쓰일 수 있는 절이다.')
+        self.assertEqual(text,'관형사절은 용언 어간에 관형사형 어미 ‘-(으)ㄴ’, ‘-는’, ‘-(으)ㄹ’, ‘-던’이 붙어서 관형어로 쓰일 수 있는 절이다.')
+        self.assertEqual(n,4)
+        self.assertEqual(correct_display('선어말 어미가 으)시-’를 붙였다.')[0],'선어말 어미 ‘-(으)시-’를 붙였다.')
+        self.assertEqual(correct_display('관형사형 ‘ -(으)2 ’ 뒤에 연결되는')[0],'관형사형 ‘ -(으)ㄹ’ 뒤에 연결되는')
+        # 어미를 말하는 문장이 아니면 ‘눈’은 눈이다.
+        self.assertEqual(correct_display('4 연에 나온 ‘눈’과 ‘매화 향기’의 대비')[1],0)
+    def test_damage_is_judged_as_the_reader_sees_it(self):
+        from passage_text import ocr_damage,shown_damage
+        broken='관형사절은 관형사형 어미 느(의L ’이 붙어서 관형어로 쓰이는 절이다.'
+        self.assertIn('letter',ocr_damage(broken))
+        self.assertEqual(shown_damage(broken),[])
     def test_hanja_glosses_and_list_markers_are_not_counted_as_damage(self):
         from passage_text import ocr_damage
         # 한자 뒤의 조사는 이 책들의 정상 표기.
