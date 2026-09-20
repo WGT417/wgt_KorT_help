@@ -236,14 +236,31 @@ def strange_ratio(text):
 # The OCR layer uses full-width punctuation; in the page font "본용언， 본용언과"
 # looks like a space before the comma.
 PLAIN=str.maketrans({'，':',','：':':','；':';','（':'(','）':')','．':'.','？':'?','！':'!','～':'~'})
+
+# The grammar books name a jamo by printing it in quotes, and this scan reads
+# three of them as Latin capitals: ㄹ as E, ㄴ as L, ㅜ as T. The books' own
+# sentences settle which is which — "‘E’의 비음화는 ‘E’이 ‘L’으로 바뀌는 현상"
+# is ㄹ 비음화, "‘T’는 입술을 둥글게 오므리며" is ㅜ — and 437, 271 and 52 quoted
+# letters across the library read that way. ㅐ is left alone: it comes out as H,
+# but so does ㅂ ("‘H’이라는 음소는 음절의 초성에 놓일 때"), and nothing in the
+# line says which. A letter followed by more letters is a word, not a jamo, so
+# the French title ‘L’enfer, c'est les autres’ stays as it is.
+JAMO={'E':'ㄹ','L':'ㄴ','T':'ㅜ'}
+QUOTED_JAMO=re.compile(r'(?<![A-Za-z])([‘\'"“])\s*([ELT])\s*([’\'"”])(?![A-Za-z])')
+
 def correct_display(text):
     """Replace known OCR-damaged words for reading. Returns (text, number of replacements).
     Source text, excerpts and citations are never changed; only what is shown."""
     if not text:return text,0
     text=re.sub(r'(?<=[가-힣’”)]),(?=\S)',', ',re.sub(r'\s+([,:;)?!])',r'\1',text.translate(PLAIN)))
+    jamo=0
+    def name(m):
+        nonlocal jamo
+        jamo+=1;return m.group(1)+JAMO[m.group(2)]+m.group(3)
+    text=QUOTED_JAMO.sub(name,text)
     words=corrections()
-    if not words:return text,0
-    count=0
+    if not words:return text,jamo
+    count=jamo
     def swap(m):
         nonlocal count
         fixed=words.get(m.group())

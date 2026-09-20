@@ -111,6 +111,26 @@ class GlyphRepairTests(unittest.TestCase):
         self.assertEqual(noise('Chomsky 의 Syntactic Structures 는 중요하다.'),0)
         self.assertEqual(noise('Halliday 와 Hasan 이 제시한 응결성 개념이다.'),0)
         self.assertEqual(noise('복합 양식 텍스트는 multimodal text 로 불린다.'),0)
+    def test_quoted_jamo_read_as_latin_capitals_are_named(self):
+        from text_pipeline import correct_display
+        text,n=correct_display('‘ E ’의 비음화는 ‘ E ’이 ‘ L ’으로 바뀌는 현상이다.')
+        self.assertEqual(n,3);self.assertEqual(text,'‘ㄹ’의 비음화는 ‘ㄹ’이 ‘ㄴ’으로 바뀌는 현상이다.')
+        self.assertEqual(correct_display('모음 ‘T’는 입술을 둥글게 오므린다.')[0],'모음 ‘ㅜ’는 입술을 둥글게 오므린다.')
+        # A letter that starts a word is a word: the French title stays.
+        self.assertEqual(correct_display("희곡 ‘L’enfer, c'est les autres’이다.")[1],0)
+        # ㅐ also comes out as H, but so does ㅂ, so H is left alone.
+        self.assertEqual(correct_display('단 모음 ‘ H ’와 ‘ ~l ’에서 차이가 난다.')[1],0)
+    def test_hanja_glosses_and_list_markers_are_not_counted_as_damage(self):
+        from passage_text import ocr_damage
+        # 한자 뒤의 조사는 이 책들의 정상 표기.
+        self.assertEqual(ocr_damage('두 번째 화자 話者는 군율 軍律에 따라 처리되었다.'),[])
+        # 한글이 한자 자리에 들어앉은 것은 깨짐.
+        self.assertIn('hanja',ocr_damage('고조된 모방(模뼈)을 제시한다.'))
+        # ①②③이 모두 @로 읽힌 목록 표시.
+        self.assertEqual(ocr_damage('@ 발표 내용에 대해 많은 것을 알고 있는 청중이 있다.'),[])
+        self.assertIn('symbol',ocr_damage('%인 값을 구한다'))
+        # 따옴표 안의 홑 글자는 책이 쓰는 표기.
+        self.assertEqual(ocr_damage('명사 ‘A’와 ‘B’가 결합하여 합성 명사를 이룬다.'),[])
     def test_two_syllable_terms_are_corrected_by_the_curated_list(self):
         from text_pipeline import correct_display,corrections
         words=corrections()

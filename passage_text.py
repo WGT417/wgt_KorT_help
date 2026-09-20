@@ -27,19 +27,30 @@ def noise(text):
     c=compact(text)
     return len(re.findall(r'[가-힣][A-Za-z%&@]{1,3}[가-힣]|[가-힣][0-9][}\-]|[가-힣][0-9]{3,}|[가-힣][λ}]|[0-9]π|[a-zA-Z]\)\x27|[-~]{4,}|'+GLOSS,c))+len(FOREIGN.findall(c))+len(STRANDED.findall(text))+int(bool(re.match(r'^[;:，]',c)))
 
+# A Hanja gloss followed by a Korean particle or ending is how these books are
+# printed (話者는, 軍律에, 素材를); it is not damage. Damage is a Hangul syllable
+# standing where another Hanja belongs (模뼈 for 模倣, 共짧 for 共謀).
+HANJA_TAIL=r'(?:의|이|가|을|를|은|는|에|와|과|도|만|로|으|라|하|한|들|인|시|형|적|론|설|편|권|장|절|기|서|부|년|대|체|류|어|음|자|문|학|법|성|화|식|제)'
+BROKEN_GLOSS=re.compile(r'[一-鿿](?!'+HANJA_TAIL+r'(?![가-힣]))[가-힣]')
+# A bullet or a note mark opening a line is the page's own typography, not a
+# stray glyph: the circled numerals ①②③ all come out of this scan as @.
+MARKER=re.compile(r'^[@*%·•]\s')
 def ocr_damage(text):
     """Kinds of OCR damage still visible in a reading sentence that noise()
     lets through: jamo read as Latin letters (‘ L ’이 ‘ E ’로), a stray digit
-    between words, a stray symbol, a long run with no spaces, Hangul inside a
-    Hanja gloss (설면(좀面))."""
+    between words, a stray symbol, a long run with no spaces, Hangul standing
+    inside a Hanja gloss (설면(좀面))."""
     kinds=[]
     plain=re.sub(r'\([^)]*[A-Za-z]{2,}[^)]*\)','',text)
+    # A single letter in quotes is deliberate notation — a jamo the scan could
+    # not read, or a placeholder the book itself uses (명사 ‘A’와 ‘B’, ‘C’는 자음).
+    plain=re.sub(r'[‘\'"“]\s*[A-Za-z]\s*[’\'"”]','',plain)
     if re.search(r'(?<![A-Za-z\-/])[A-Z](?![A-Za-z])',plain):kinds.append('letter')
     from text_pipeline import COUNTED
     if any(not COUNTED.fullmatch(m.group(1)) for m in re.finditer(r'[가-힣]\s\d{1,2}\s([가-힣]+)',plain)):kinds.append('digit')
-    if re.search(r'^[%$#@&*|]|[가-힣][%&@|][가-힣]',text):kinds.append('symbol')
+    if (re.search(r'^[%$#@&*|]',text) and not MARKER.match(text)) or re.search(r'[가-힣][%&@|][가-힣]',text):kinds.append('symbol')
     if re.search(r'[가-힣]{18,}',text):kinds.append('unspaced')
-    if re.search(r'[\u4e00-\u9fff][가-힣]|[가-힣][\u4e00-\u9fff]',text):kinds.append('hanja')
+    if BROKEN_GLOSS.search(text):kinds.append('hanja')
     return kinds
 
 def suspect_segments(display):
