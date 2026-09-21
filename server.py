@@ -183,8 +183,14 @@ class Handler(BaseHTTPRequestHandler):
                 from term_index import match_terms
                 concepts=match_concepts(query,category);terms=match_terms(query,category)
                 # 관형절 asked, 안은문장 entry matched only through its alias, and the
-                # books' index has 관형절 itself: the index card answers, the entry is background.
-                covered={s['term'].replace(' ','').lower() for t in terms for s in t['sources']}|{t['key'] for t in terms}
+                # books' index has 관형절 itself: the index card answers, the entry is
+                # background. Only an index card that actually carries a defining
+                # sentence may push an entry down — a row that just says "쪽을 열어
+                # 확인하세요" answers nothing, and since the heading-derived pseudo
+                # index (build_term_index.heading_terms) added 228 such terms, that
+                # was demoting 문학의 갈래 체계 behind an empty 갈래론 row.
+                covered={s['term'].replace(' ','').lower() for t in terms for s in t['sources'] if s['quote']}
+                covered|={t['key'] for t in terms if any(s['quote'] for s in t['sources'])}
                 for c in concepts:
                     if c['match']=='exact' and not c['by_label'] and any(c['matched_term'] in k for k in covered):c['match']='related'
                 result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms,'quota':None}
