@@ -19,8 +19,18 @@ def key_of(term):return re.sub(r'[\s\-‘’\'"·]','',term).lower()
 
 # 일컫는다 is often read 일걷는다.
 DEFINING_VERB=r'(?:말한다|가리킨다|뜻한다|의미한다|이른다|일[컫걷]는다|지칭한다|(?:으로|로|라고|이라고)정의된다|정의한다|정의할수있다|규정된다|규정할수있다)'
+# The literature books close a defining sentence without writing "…이다". Korean
+# drops 이 after a vowel-final noun, so 장르이다 is printed 장르다 ("서사시는 …
+# 서술시의 대표적 장르다"); a sentence that states what a form is made of ends in
+# 로 이루어진다 ("판소리 사설은 아니리와 창의 결합으로 이루어진다"), and one that
+# places a term in a category in 에 해당한다. All twelve places in the 문학 books
+# were read. 로 분류·구분된다 was tried and dropped: listing the subtypes is not
+# defining the term, which test_definitions_outrank_mentions already settled on
+# "관형사절은 동격 관형사절과 관계 관형사절로 분류된다". The text this is matched
+# against has its spaces removed, hence 에해당한다.
+CATEGORY_END=r'(?:갈래|장르|양식|형식|문체|명칭|용어|개념|유형|부류|작품군|노래|시가|산문|운문)다|에해당한다|(?:으)?로이루어진다'
 # What a "X란 ..." sentence must end with to define X rather than just talk about it.
-DEFINING_END=r'(?:이다|말한다|뜻한다|의미한다|가리킨다|일[컫걷]는다|이른다|지칭한다|칭한다|정의된다|정의한다|규정된다|(?:라|이라|볼|말할|정의할)수있다|(?:뜻하|의미하|가리키|말하|이르)기도한다)[.。]?$'
+DEFINING_END=r'(?:이다|'+CATEGORY_END+r'|말한다|뜻한다|의미한다|가리킨다|일[컫걷]는다|이른다|지칭한다|칭한다|정의된다|정의한다|규정된다|(?:라|이라|볼|말할|정의할)수있다|(?:뜻하|의미하|가리키|말하|이르)기도한다)[.。]?$'
 # "X라고 한다/부른다" names X; "X라고 부르는 현상" only mentions the name.
 NAMING=r'(?:이라고|라고|이라|라)(?:도|는|를)?(?:한다(?!면|고)|하며|하고|하는데|하였다|했다|하기도(?!하지만)|부른다|부르며|부르고|부르는데|부르기도(?!하지만)|부르고자|불러(?!야)|불린다|불리며|불리고|불리기도(?!하지만)|일[컫걷]는다|일컬으며|일[컫걷]고|칭한다|칭하며|칭하고|명명한다|명명하였다|명명했다|정의한다|정의하며|이른다|말한다)'
 # Words that may open a defining sentence before the term; anything else
@@ -63,7 +73,7 @@ def definition_score(sentence,key,longer=()):
         elif re.match(NAMING,tail):score=10
         elif re.match(r'(?:으로|로)도?(?:불린다|불리며|불리고|불리기도|부른다|부르며|부르기도|일컫는다|칭한다|칭하며|명명한다|명명된다|명명되며|명명되기도)',tail):score=8
         elif opens and re.match(r'(?:은|는|이라는것은|라는것은|이라함은|라함은|의개념은|의정의는)',tail):
-            score=9 if re.search(DEFINING_VERB+r'[.。]?$',end) and not re.search(r'(?:다|라|자|냐)고말한다[.。]?$',end) else 7 if re.search(r'이다[.。]?$',end) and not re.search(NOT_DEFINING_END,end) else 5
+            score=9 if re.search(DEFINING_VERB+r'[.。]?$',end) and not re.search(r'(?:다|라|자|냐)고말한다[.。]?$',end) else 7 if re.search(r'(?:이다|'+CATEGORY_END+r')[.。]?$',end) and not re.search(NOT_DEFINING_END,end) else 5
         else:score=1
         best=max(best,score)
     return best
