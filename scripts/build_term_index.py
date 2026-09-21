@@ -15,9 +15,18 @@ from pathlib import Path
 from collections import Counter,defaultdict
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import core
-from text_pipeline import compact,restore_terms,tidy_display,glyph_gaps,term_starts,split_heading,SENTENCE_INITIAL,TERMS,VERSION
+from text_pipeline import compact,restore_terms,correct_display,tidy_display,glyph_gaps,term_starts,split_heading,SENTENCE_INITIAL,TERMS,VERSION
 from passage_text import SENTENCE_END,noise,shown_damage
 from term_index import definition_score,DEFINITION
+
+# Three 문학 books have no usable back-of-book index: 고전산문교육론 ends with the
+# author biographies instead of one, 한국문학강의 indexes only people, and
+# 교과서 시 정본 해설's list survives as an image that neither the text layer nor
+# a 300dpi re-OCR could read. Their own section headings are the other list of
+# what a book teaches, so where the index yields almost nothing the headings
+# stand in for it. Such a source is marked indexed=False, which the card already
+# shows as 찾아보기 밖, and it must still be a term the page actually carries.
+NO_INDEX=25
 
 # Page-number groups such as "31", "54, 76", "296-298". The text between two
 # groups is the next entry's term. Linear scan, no backtracking.
@@ -284,6 +293,34 @@ def spacing(db,keys):
     # the scan as the book (체계문 21 to 1, 사용문 9 to 1).
     return sorted(k for k in keys if joined[k]>=3 and (spaced[k]<=.03*(spaced[k]+joined[k]) or (len(k)>=3 and spaced[k]<=1 and joined[k]>=8)))
 
+def heading_terms(db,book_id,keyed,front=0):
+    """(topic, pdf_page) for the section headings of a book with no index."""
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    from topic_map import topic_of
+    out=[];seen=set()
+    rows=db.execute("""SELECT x.raw,x.display,x.kind,p.pdf_page,b.title FROM passages x
+      JOIN pages p ON p.id=x.page_id JOIN books b ON b.id=p.book_id
+      WHERE x.version=? AND p.book_id=? AND x.kind IN ('body','fragment') AND p.pdf_page>? ORDER BY p.pdf_page""",(VERSION,book_id,front)).fetchall()
+    for r in rows:
+        display=restore_terms(r['display'])
+        line=display if r['kind']=='fragment' else split_heading(r['raw'],display)[0]
+        if not line:continue
+        topic=topic_of(correct_display(line)[0],r['title'])
+        key=key_of(topic) if topic else ''
+        # A heading is only usable when it names something and the page carries it.
+        if not 3<=len(key)<=24 or not re.search(r'[가-힣]',topic):continue
+        if key in SKIP_HEADING or key not in keyed.get(r['pdf_page'],''):continue
+        if (key,r['pdf_page']) in seen:continue
+        seen.add((key,r['pdf_page']));out.append((topic,r['pdf_page']))
+    return out
+# Headings that name the book's apparatus rather than a topic.
+SKIP_HEADING={'들어가며','나가며','맺음말','요약','정리하기','생각해보기','더읽을거리','작품읽기','핵심정리'}
+# 교과서 시 정본 해설 is a commentary on one poem after another: its headings are
+# the 감상 포인트 of each poem ("역설의 미학-사랑의 결실"), so they name works and
+# readings rather than the concepts a term dictionary is made of. Its material
+# belongs to a work-level card, not here.
+NO_HEADINGS={'교과서 시 정본 해설'}
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--category',default='');args=parser.parse_args()
     start=time.time();terms=defaultdict(lambda:{'label':Counter(),'sources':[]});report=[]
@@ -340,8 +377,16 @@ def main():
                 seen.add((key,pdf));carried+=1
                 entry=terms[key];entry['label'][label]+=1
                 entry['sources'].append({'book':b['title'],'category':b['category'],'pdf_page':pdf,'page_id':ids[pdf]})
-            report.append({'book':b['title'],'index_pages':index_pages,'entries':kept+carried,'carried':carried})
-            print(f"{b['title']}: index pages {index_pages}, validated entries {kept}, kept from the previous build {carried}",flush=True)
+            heads=0
+            if kept+carried<NO_INDEX and b['title'] not in NO_HEADINGS:
+                for term,pdf in heading_terms(db,b['id'],keyed,int(b['pages']*.05)):
+                    if (key_of(term),pdf) in seen:continue
+                    seen.add((key_of(term),pdf));heads+=1
+                    entry=terms[key_of(term)];entry['label'][term]+=1
+                    entry['sources'].append({'book':b['title'],'category':b['category'],'pdf_page':pdf,'page_id':ids[pdf],'indexed':False})
+            report.append({'book':b['title'],'index_pages':index_pages,'entries':kept+carried+heads,'carried':carried,'from_headings':heads})
+            print(f"{b['title']}: index pages {index_pages}, validated entries {kept}, kept from the previous build {carried}"
+                  +(f", from headings {heads}" if heads else ''),flush=True)
         # The first two syllables of a term count as well: 동격 of 동격절 and 동격 관형사절.
         # The curated term list joins those a book's index never listed (심미적, 음운론).
         hangul=[k for k in terms if re.fullmatch(r'[가-힣]{2,14}',k)]
