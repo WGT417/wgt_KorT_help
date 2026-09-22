@@ -77,6 +77,50 @@ def reason(query,sources):
     answer=openai_call(prompt_for(query,sources,packet),API_KEY,schema=MODEL_ANSWER_SCHEMA)
     return validate(resolve_evidence(answer,registry),sources)
 
+# Firebase Hosting cuts a proxied request at 60s, and an AI 해설 often takes
+# 45–70s. The answer is generated in a thread; a request waits at most AI_WAIT
+# and otherwise hands back a job id the page asks for again. Jobs live in this
+# process, which is enough because deploy.json runs one instance.
+AI_WAIT=48
+AI_JOBS={};JOBS_LOCK=threading.Lock()
+
+def refund_quota(admin):
+    if admin or QUOTA is None:return
+    try:QUOTA.refund(quota.today())
+    except Exception as error:print(f'quota refund error: {error}',flush=True)
+
+def strip_sources(result):
+    for source in result['sources']:
+        source.pop('text',None);source.pop('evidence_text',None)
+    return result
+
+def generate(job,query,category,state,admin):
+    result=job['result']
+    try:
+        sources=collect_evidence(query,category,result['sources'],openai_call,API_KEY)
+        result['sources']=sources
+        result['answer']=reason(query,sources);result['ai_used']=True
+    except Exception as error:
+        if not isinstance(error,ValueError):print(f'AI 해설 실패: {error!r}',flush=True)
+        result['notice']=str(error) if isinstance(error,ValueError) else '해설을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.'
+        refund_quota(admin)
+        if 'remaining' in state:state['remaining']+=1
+    finally:
+        AI_LOCK.release();strip_sources(result);job['done'].set()
+
+def start_job(result,query,category,state,admin):
+    job={'done':threading.Event(),'result':result,'question':query,'quota':state,'at':time.monotonic()}
+    job_id=secrets.token_urlsafe(18)
+    with JOBS_LOCK:
+        for old in [k for k,j in AI_JOBS.items() if time.monotonic()-j['at']>1800]:del AI_JOBS[old]
+        AI_JOBS[job_id]=job
+    threading.Thread(target=generate,args=(job,query,category,state,admin),daemon=True).start()
+    return job_id
+
+def wait_job(job_id,job,deadline):
+    if job['done'].wait(max(1.0,deadline-time.monotonic())):return job['result']
+    return {'question':job['question'],'pending':job_id,'quota':job['quota']}
+
 class Handler(BaseHTTPRequestHandler):
     server_version='LocalLibrary'
     def log_message(self,*args):pass
@@ -107,10 +151,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f'quota error: {error}',flush=True)
             return (False,{'unavailable':True}) if consume else {'unavailable':True}
-    def quota_refund(self):
-        if self.is_admin() or QUOTA is None:return
-        try:QUOTA.refund(quota.today())
-        except Exception as error:print(f'quota refund error: {error}',flush=True)
     def headers_safe(self):
         self.send_header('Cache-Control','no-store')
         self.send_header('X-Content-Type-Options','nosniff')
@@ -152,6 +192,11 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:text,blocks,reading=layout_source(db,result['id'])
                 if text:result.update(original_text=result['text'],text=text,reading_blocks=reading,corrections=sum(b.get('corrections',0) for b in reading))
                 return self.send(200,result)
+            match=re.fullmatch(r'/api/ask/([A-Za-z0-9_-]{16,40})',path)
+            if match:
+                job=AI_JOBS.get(match[1])
+                if not job:return self.send(404,{'error':'작성 중이던 해설을 찾지 못했습니다. 서버가 다시 시작되었을 수 있으니 다시 질문해 주세요.'})
+                return self.send(200,wait_job(match[1],job,time.monotonic()+AI_WAIT))
             allowed={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/ux.css':'ux.css','/sw.js':'sw.js','/manifest.webmanifest':'manifest.webmanifest','/icon.svg':'icon.svg','/icon-192.png':'icon-192.png','/icon-512.png':'icon-512.png'}
             if path not in allowed:return self.send(404,{'error':'찾을 수 없습니다.'})
             file=ROOT/'dist'/allowed[path]
@@ -175,6 +220,7 @@ class Handler(BaseHTTPRequestHandler):
                 API_KEY=key
                 return self.send(200,{'configured':bool(API_KEY),'message':'이 컴퓨터에 키를 저장했습니다. 다음 실행부터 자동 연결됩니다.' if API_KEY else '연결을 해제하고 이 앱에 저장한 키를 삭제했습니다.'})
             if path=='/api/ask':
+                started=time.monotonic()
                 query=body.get('question','');category=body.get('category','문식성');mode=body.get('mode','search');bid=''
                 if not isinstance(query,str) or not 2<=len(query.strip())<=1000:return self.send(400,{'error':'질문을 2~1,000자로 입력해 주세요.'})
                 if category not in {'전체','문식성','문법','문학'} or mode not in {'search','reason'}:return self.send(400,{'error':'검색 조건을 확인해 주세요.'})
@@ -198,23 +244,17 @@ class Handler(BaseHTTPRequestHandler):
                 elif use_ai and not API_KEY:result['notice']='해설이 필요한 질문입니다. OpenAI API 키를 연결하면 근거를 바탕으로 설명합니다. 지금은 찾은 원문을 보여드립니다.'
                 elif use_ai:
                     if not AI_LOCK.acquire(blocking=False):return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
+                    job_id=None
                     try:
                         allowed,state=self.quota_state(consume=True);result['quota']=state
                         if not allowed:
                             result['notice']=('지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 중단했습니다. 원문 검색과 개념 정리는 계속 이용할 수 있습니다.' if state.get('unavailable')
                                 else f"오늘 서재 전체에 열어 둔 AI 해설 {quota.LIMIT}회를 모두 사용했습니다. 한국 시각 자정에 다시 채워지며, 원문 검색과 개념 정리는 계속 볼 수 있습니다.")
-                        else:
-                            try:
-                                sources=collect_evidence(query,category,sources,openai_call,API_KEY)
-                                result['sources']=sources
-                                result['answer']=reason(query,sources);result['ai_used']=True
-                            except ValueError as error:
-                                result['notice']=str(error);self.quota_refund()
-                                if 'remaining' in state:state['remaining']+=1
-                    finally:AI_LOCK.release()
-                for source in sources:
-                    source.pop('text',None);source.pop('evidence_text',None)
-                return self.send(200,result)
+                        else:job_id=start_job(result,query,category,state,self.is_admin())
+                    finally:
+                        if job_id is None:AI_LOCK.release()  # otherwise the job's thread releases it
+                    if job_id:return self.send(200,wait_job(job_id,AI_JOBS[job_id],started+AI_WAIT))
+                return self.send(200,strip_sources(result))
             match=re.fullmatch(r'/api/pages/(\d+)/(verify|ocr)',path)
             if match:
                 if PUBLIC and not self.is_admin():return self.send(403,{'error':'관리자만 사용할 수 있습니다.'})

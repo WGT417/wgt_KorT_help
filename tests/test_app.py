@@ -1,4 +1,4 @@
-import sys, unittest, json, threading, io, tempfile
+import sys, unittest, json, threading, io, tempfile, time
 from pathlib import Path
 from unittest.mock import patch
 from urllib.request import Request,urlopen
@@ -257,6 +257,24 @@ class PublicModeTests(unittest.TestCase):
     def test_failed_generation_refunds_the_attempt(self):
         with patch.object(server,'reason',side_effect=ValueError('OpenAI 실패')):data=self.ask()
         self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('실패',data['notice'])
+    def test_slow_generation_hands_back_a_job_and_finishes_on_poll(self):
+        # Firebase Hosting drops a request at 60s, so past AI_WAIT the page gets a job id and asks again.
+        def slow(query,sources):time.sleep(2.5);return {'title':'slow mock'}
+        with patch.object(server,'AI_WAIT',0),patch.object(server,'reason',side_effect=slow):
+            first=self.ask()
+            self.assertIn('pending',first);self.assertEqual(first['question'],'피동과 사동의 차이');self.assertNotIn('answer',first)
+            for _ in range(10):
+                with self.request('/api/ask/'+first['pending']) as r:data=json.load(r)
+                if not data.get('pending'):break
+        self.assertTrue(data['ai_used']);self.assertEqual(data['answer'],{'title':'slow mock'});self.assertEqual(data['quota']['remaining'],2)
+        self.assertTrue(all('text' not in s for s in data['sources']))
+        self.assertTrue(server.AI_LOCK.acquire(blocking=False));server.AI_LOCK.release()
+        with self.assertRaises(HTTPError) as e:self.request('/api/ask/'+'x'*20)
+        self.assertEqual(e.exception.code,404)
+    def test_unexpected_generation_error_refunds_and_frees_the_lock(self):
+        with patch.object(server,'reason',side_effect=KeyError('boom')):data=self.ask()
+        self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('만들지 못했습니다',data['notice'])
+        self.assertTrue(server.AI_LOCK.acquire(blocking=False));server.AI_LOCK.release()
     def test_quota_backend_down_refuses_generation(self):
         with patch.object(server,'QUOTA',None):data=self.ask()
         self.assertFalse(data['ai_used']);self.assertIn('중단',data['notice']);self.assertTrue(data['quota']['unavailable'])
