@@ -85,30 +85,93 @@ def _load():
         terms=json.loads(PATH.read_text(encoding='utf-8')).get('terms',{}) if PATH.exists() else {}
         _cache.update(stamp=stamp,terms=terms);return terms
 
+# The scan turns a closing bracket into a look-alike: 「봄봄J, 〈광장), 《사슴}.
+CLOSING={'「':'」','〈':'〉','<':'〉','《':'》','『':'』'}
+# Index headings whose jamo the scan read as Latin letters, each checked against
+# its page. The same letter stands for different jamo, so no rule can do this:
+# 한국어표준문법 102 lists "'H'불규칙, 'E'불규칙, 'λ'불규칙" (ㅂ ㄷ ㅅ), while
+# 한국어문법총론 1 68 writes "'己'의 비음화" (ㄹ).
+LABEL_FIXES={
+    'E ’불규칙':'ㄷ 불규칙','E ’ 불규칙 활용':'ㄷ 불규칙 활용','E ’불규칙 동사':'ㄷ 불규칙 동사',
+    'E ’의 비음화':'ㄹ의 비음화',
+    'L ’첨가':'ㄴ 첨가',            # 국어음운론 강의 205: "4.1. L- 첨가"
+    'L 다':'-ㄴ다','L 다’체':'-ㄴ다체',  # 한국현대소설의 이해 316: "'-L 다'체의 종결형"
+    'l 상합자':'ㅣ 상합자',          # 국어사 개론 39: 一字中聲之與ㅣ相合者
+    'OJ 수사':'양수사',              # 한국어표준문법 251: 양수사(量數詞)와 서수사
+}
+def display_label(label):
+    """An index heading as the page shows it: known misreadings fixed and a work
+    title's bracket closed (93 〈…) and 94 「…J among the 문학 books' headings;
+    r등신불J is 「등신불」 with both brackets misread)."""
+    if label in LABEL_FIXES:return LABEL_FIXES[label]
+    label=correct_display(label)[0].strip()
+    label=re.sub(r'^r\s*([^\sA-Za-z][^「」]*?)\s*J$',r'「\1」',label)
+    m=re.fullmatch(r'([「〈<《『])([^「」〈〉<>《》『』()]+?)\s*[)〉>}JjＪ」》』]?',label)
+    if m:label=('〈' if m[1]=='<' else m[1])+m[2].strip()+CLOSING[m[1]]
+    return label
+
+CHO='ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ'
+def sort_key(label):
+    """가나다 order as a Korean glossary has it: Hangul first, with a lone jamo
+    (ㄴ 첨가) at the head of its consonant, then Latin, then numbers and the rest."""
+    s=re.sub(r'^[^가-힣ㄱ-ㅎA-Za-z0-9]+','',label).lower();ch=s[:1]
+    if '가'<=ch<='힣':rank,cho=0,(ord(ch)-0xAC00)//588
+    elif ch and ch in CHO:rank,cho=0,CHO.index(ch)
+    elif ch.isascii() and ch.isalpha():rank,cho=1,0
+    else:rank,cho=2,0
+    return (rank,cho,s,label)
+
+def _group(k):
+    """관형절 and 관형사절 are one card: the school-grammar name and the books' name."""
+    from retrieval import ALIASES
+    terms=_load()
+    group=next((g for g in ALIASES if k in g),(k,))
+    return [(g,terms[g]) for g in group if g in terms]
+
+def _found(k):
+    """Every indexed spelling that reads k once its label is fixed: L ’첨가 in
+    국어음운론 강의 and ㄴ 첨가 in the other books are one term."""
+    with _catalog_lock:keys=_build_catalog()['keys'].get(k,(k,))
+    found={}
+    for key in (k,*keys):
+        for g,e in _group(key):found.setdefault(g,e)
+    return list(found.items())
+
+def _entry(found):
+    return {'label':' · '.join(dict.fromkeys(display_label(e['label']) for g,e in found)),'variants':sorted({v for g,e in found for v in e['variants']})}
+
 def match_terms(query,category='전체',limit=3):
     """Exact term matches only: a word of the question (particles stripped),
     or two or three adjacent words joined, must equal an indexed term."""
-    terms=_load()
-    if not terms:return []
-    from retrieval import ALIASES
+    if not _load():return []
     wanted=[key_of(t) for t in query_terms(query)]+[key_of(query)]
     hits=[]
     for k in dict.fromkeys(wanted):
-        # 관형절 and 관형사절 are one card: the school-grammar name and the books' name.
-        group=next((g for g in ALIASES if k in g),(k,))
-        found=[(g,terms[g]) for g in group if g in terms]
+        found=_found(k)
         if not found:continue
         sources=[dict(s,term=e['label']) for g,e in found for s in e['sources'] if category=='전체' or s['category']==category]
         if not sources:continue
-        entry={'label':' · '.join(dict.fromkeys(e['label'] for g,e in found)),'variants':sorted({v for g,e in found for v in e['variants']})}
-        hits.append((len(k),len({s['book'] for s in sources}),k,entry,sources))
+        hits.append((len(k),len({s['book'] for s in sources}),k,_entry(found),sources))
     hits.sort(key=lambda h:(-h[0],-h[1]))
     # '음절의 끝소리 규칙' answers the question; its parts 음절 and 규칙 do not.
     keys=[h[2] for h in hits]
     hits=[h for h in hits if not any(h[2]!=k and h[2] in k for k in keys)]
+    return _cards(hits[:limit])
+
+def card(label):
+    """The card for one term picked from the catalog: that term exactly, never a
+    part of it, from every area."""
+    k=key_of(label);found=_found(k)
+    if not found:return []
+    sources=[dict(s,term=e['label']) for g,e in found for s in e['sources']]
+    entry=_entry(found);written=notes().get(k)
+    if written and key_of(written['label'])==k:entry['label']=written['label']
+    return _cards([(len(k),0,k,entry,sources)])
+
+def _cards(hits):
     result=[]
     with connect() as db:
-        for _,_,k,entry,sources in hits[:limit]:
+        for _,_,k,entry,sources in hits:
             # 관형절 and 관형사절 both index 265쪽: one row per page, keeping the better sentence.
             pages={}
             for s in sources:
@@ -126,3 +189,75 @@ def match_terms(query,category='전체',limit=3):
             resolved.sort(key=lambda s:(not s['quote'],not s['indexed'],s['ocr'],s['book'],s['pdf_page']))
             result.append({'key':k,'label':entry['label'],'variants':entry['variants'],'sources':resolved})
     return result
+
+AREA_BIT={'문식성':1,'문법':2,'문학':4}
+DEFINED,CONCEPT,NOTE=1,2,4
+
+NOTES=DATA/'term-notes.json'
+_notes={'stamp':None,'by_key':{},'model':None}
+def notes():
+    """The 풀이 scripts/write_term_notes.py wrote ahead of time from the books'
+    paragraphs, by term key. Nothing here calls a model."""
+    stamp=NOTES.stat().st_mtime_ns if NOTES.exists() else None
+    with _lock:
+        if _notes['stamp']!=stamp:
+            data=json.loads(NOTES.read_text(encoding='utf-8')) if NOTES.exists() else {}
+            _notes.update(stamp=stamp,model=data.get('model'),by_key={key_of(label):n for label,n in data.get('notes',{}).items()})
+        return _notes['by_key']
+
+def note(label):
+    """A card's 풀이 with each citation resolved to the library page it quotes."""
+    n=notes().get(key_of(label))
+    if not n:return None
+    cites=[]
+    with connect() as db:
+        for c in n['citations']:
+            row=db.execute('SELECT p.id,p.printed_page,p.pdf_page,p.number_status,b.title FROM pages p JOIN books b ON b.id=p.book_id WHERE p.id=?',(c['page_id'],)).fetchone()
+            if row:cites.append(dict(row)|{'book':row['title'],'quote':correct_display(c['quote'])[0]})
+    if not cites:return None
+    return {k:n[k] for k in ('label','definition','explanation','examples','basis')}|{'citations':cites,'model':_notes['model']}
+_catalog={'stamp':None,'items':[],'keys':{}}
+# Fixing 6,600 labels takes most of a second, so the server builds the list once
+# at start (server.warm_catalog) and a request arriving meanwhile waits for that
+# build instead of starting its own.
+_catalog_lock=threading.Lock()
+def catalog():
+    """Every term of the books' indexes and every written concept, for the page
+    that lays them out as cards: [label, area bits, books, flags], in 가나다
+    order, one card per label as fixed (display_label), so 양수사 and OJ 수사
+    are one card.
+
+    Headings stood in for the index of 고전산문교육론 and 한국문학강의 (see
+    build_term_index.heading_terms). They serve questions well enough, but as a
+    list they read "할 수도 없었다", "저 13 장", "꼼꼼히 읽기: …", so a term only
+    those headings give is left out of the catalog."""
+    with _catalog_lock:return _build_catalog()['items']
+
+def _build_catalog():
+    from concepts import all_concepts
+    terms=_load();concepts=all_concepts();written=notes()
+    stamp=(_cache['stamp'],id(concepts),_notes['stamp'])
+    if _catalog['stamp']==stamp:return _catalog
+    data=json.loads(PATH.read_text(encoding='utf-8')) if PATH.exists() else {}
+    from_headings={b['book'] for b in data.get('books',[]) if b.get('from_headings')}
+    named={key_of(t) for c in concepts for t in c['_terms']}
+    groups={}
+    for k,e in terms.items():
+        if {s['book'] for s in e['sources']}<=from_headings:continue
+        label=display_label(e['label'])
+        groups.setdefault(key_of(label),[label,[]])[1].append(k)
+    items=[]
+    for shown,(label,keys) in groups.items():
+        sources=[s for k in keys for s in terms[k]['sources']]
+        flags=(DEFINED if any(s.get('quote') for s in sources) else 0)|(CONCEPT if named&{shown,*keys} else 0)|(NOTE if shown in written else 0)
+        # The 풀이 spells the term with its spaces put back (두 자리 서 술어 → 두 자리 서술어).
+        if shown in written and key_of(written[shown]['label'])==shown:label=written[shown]['label']
+        items.append([label,sum(AREA_BIT.get(c,0) for c in {s['category'] for s in sources}),len({s['book'] for s in sources}),flags])
+    # A concept named by no index heading ("국어의 통시적 변화") is still a card.
+    for c in concepts:
+        k=key_of(c['label'])
+        if k in groups:continue
+        items.append([c['label'],AREA_BIT.get(c['area'],0),len({s.get('book') for s in c.get('sources',[]) if s.get('book')}),CONCEPT]);groups[k]=[c['label'],[]]
+    items.sort(key=lambda i:sort_key(i[0]))
+    _catalog.update(stamp=stamp,items=items,keys={shown:keys for shown,(label,keys) in groups.items() if keys!=[shown]})
+    return _catalog

@@ -1,8 +1,8 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
-import os, json, re, threading, secrets, mimetypes, time, subprocess
+import os, json, re, threading, secrets, mimetypes, time, subprocess, gzip
 from core import ROOT, DATA, connect, init_db, search_pages, route_question, pymupdf, normalized, quality, ocr_page
 from explanation import collect_evidence, prompt_for, validate, ANSWER_SCHEMA,MODEL_ANSWER_SCHEMA,evidence_packet,resolve_evidence
 import quota
@@ -123,6 +123,48 @@ def wait_job(job_id,job,deadline):
     if job['done'].wait(max(1.0,deadline-time.monotonic())):return job['result']
     return {'question':job['question'],'pending':job_id,'quota':job['quota']}
 
+def rank_concepts(concepts,terms):
+    """관형절 asked, 안은문장 entry matched only through its alias, and the
+    books' index has 관형절 itself: the index card answers, the entry is
+    background. Only an index card that actually carries a defining sentence
+    may push an entry down — a row that just says "쪽을 열어 확인하세요"
+    answers nothing, and since the heading-derived pseudo index
+    (build_term_index.heading_terms) added 228 such terms, that was demoting
+    문학의 갈래 체계 behind an empty 갈래론 row."""
+    covered={s['term'].replace(' ','').lower() for t in terms for s in t['sources'] if s['quote']}
+    covered|={t['key'] for t in terms if any(s['quote'] for s in t['sources'])}
+    for c in concepts:
+        if c['match']=='exact' and not c['by_label'] and any(c['matched_term'] in k for k in covered):c['match']='related'
+    return concepts
+
+def card_concepts(label,concepts):
+    """The entries a term card shows. A question names an entry with any one of
+    its words, but a card is about the whole term: 말차례 순서 정하기 is not
+    서술 시간(순서·지속·빈도), which matched on 순서 alone — 586 of 1,638 card
+    matches were one word, and 486 of those entries never use the term. An
+    entry is the answer when the term is its name or alias, and background
+    when its text at least uses the term."""
+    from term_index import key_of
+    from concepts import entry_text
+    k=key_of(label);kept=[]
+    for c in concepts:
+        if k in {key_of(t) for t in [c.get('label','')]+list(c.get('aliases',[]))}:
+            c.update(match='exact',matched_term=k,by_label=k==key_of(c.get('label','')))
+        elif k in key_of(entry_text(c)):c['match']='related'
+        else:continue
+        kept.append(c)
+    return kept
+
+_catalog_body={'items':None,'plain':b'','gzip':b''}
+def catalog_body():
+    """The term list as sent: 6,500 entries are 170KB of JSON but 47KB gzipped."""
+    from term_index import catalog
+    items=catalog()
+    if _catalog_body['items'] is not items:
+        plain=json.dumps({'items':items},ensure_ascii=False,separators=(',',':')).encode()
+        _catalog_body.update(items=items,plain=plain,gzip=gzip.compress(plain))
+    return _catalog_body
+
 class Handler(BaseHTTPRequestHandler):
     server_version='LocalLibrary'
     def log_message(self,*args):pass
@@ -194,6 +236,26 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:text,blocks,reading=layout_source(db,result['id'])
                 if text:result.update(original_text=result['text'],text=text,reading_blocks=reading,corrections=sum(b.get('corrections',0) for b in reading))
                 return self.send(200,result)
+            if path=='/api/terms':
+                body=catalog_body()
+                zipped='gzip' in self.headers.get('Accept-Encoding','')
+                data=body['gzip' if zipped else 'plain']
+                self.send_response(200)
+                self.send_header('Content-Type','application/json; charset=utf-8')
+                if zipped:self.send_header('Content-Encoding','gzip')
+                self.send_header('Vary','Accept-Encoding')
+                self.send_header('Content-Length',str(len(data)))
+                self.headers_safe();self.end_headers();self.wfile.write(data);return
+            if path=='/api/terms/card':
+                # One card from the term list: the term exactly, from every area, with the
+                # concept entries that name it — the same card a question naming it gets.
+                label=parse_qs(urlsplit(self.path).query).get('q',[''])[0].strip()
+                if not 1<=len(label)<=100:return self.send(400,{'error':'용어를 확인해 주세요.'})
+                from concepts import match_concepts
+                from term_index import card,note
+                terms=card(label);concepts=rank_concepts(card_concepts(label,match_concepts(label,'전체')),terms);written=note(label)
+                if not terms and not written and not any(c['match']=='exact' for c in concepts):return self.send(404,{'error':'이 용어의 카드를 찾지 못했습니다.'})
+                return self.send(200,{'label':label,'note':written,'concepts':concepts,'terms':terms})
             match=re.fullmatch(r'/api/ask/([A-Za-z0-9_-]{16,40})',path)
             if match:
                 job=AI_JOBS.get(match[1])
@@ -229,18 +291,7 @@ class Handler(BaseHTTPRequestHandler):
                 use_ai,why=route_question(mode);sources=search_pages(query,category,bid)
                 from concepts import match_concepts
                 from term_index import match_terms
-                concepts=match_concepts(query,category);terms=match_terms(query,category)
-                # 관형절 asked, 안은문장 entry matched only through its alias, and the
-                # books' index has 관형절 itself: the index card answers, the entry is
-                # background. Only an index card that actually carries a defining
-                # sentence may push an entry down — a row that just says "쪽을 열어
-                # 확인하세요" answers nothing, and since the heading-derived pseudo
-                # index (build_term_index.heading_terms) added 228 such terms, that
-                # was demoting 문학의 갈래 체계 behind an empty 갈래론 row.
-                covered={s['term'].replace(' ','').lower() for t in terms for s in t['sources'] if s['quote']}
-                covered|={t['key'] for t in terms if any(s['quote'] for s in t['sources'])}
-                for c in concepts:
-                    if c['match']=='exact' and not c['by_label'] and any(c['matched_term'] in k for k in covered):c['match']='related'
+                terms=match_terms(query,category);concepts=rank_concepts(match_concepts(query,category),terms)
                 result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms,'quota':None}
                 if not sources:result['notice']='관련 근거를 찾지 못했습니다. 용어를 짧게 바꾸거나 검색 영역을 넓혀 주세요.'
                 elif use_ai and not API_KEY:result['notice']='해설이 필요한 질문입니다. OpenAI API 키를 연결하면 근거를 바탕으로 설명합니다. 지금은 찾은 원문을 보여드립니다.'
@@ -298,7 +349,13 @@ def warm_semantic_search():
         if vector_search.ready():vector_search.embed(['준비'])
     except Exception as error:print('의미 검색을 준비하지 못했습니다:',error,flush=True)
 
+def warm_catalog():
+    """Build the term list before the first visitor opens it."""
+    try:catalog_body()
+    except Exception as error:print('용어 목록을 준비하지 못했습니다:',error,flush=True)
+
 if __name__=='__main__':
     threading.Thread(target=warm_semantic_search,daemon=True).start()
+    threading.Thread(target=warm_catalog,daemon=True).start()
     print(f'{"Public" if PUBLIC else "Local"} server on {HOST}:{PORT} (quota: {QUOTA.name if QUOTA else "unavailable"})' if PUBLIC else f'Local URL: http://localhost:{PORT}',flush=True)
     ThreadingHTTPServer((HOST,PORT),Handler).serve_forever()

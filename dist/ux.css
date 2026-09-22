@@ -93,3 +93,48 @@ table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-he
 .source-heading{margin:18px 0 -4px;font-weight:700;color:#23364d}
 .term-tag{display:inline-block;margin:0 0 6px 6px;padding:1px 7px;border-radius:10px;font-size:11px;line-height:1.6;color:#5d6b7a;background:#eef1f5;vertical-align:middle}.term-tag.warn{color:#8a5a00;background:#fdf3e1}
 .meaning-badge{color:#5a4687;background:#f3effb;border-color:#d8cdee}
+
+/* 용어 카드: the books' index terms as tiles; a tile opens the concept and index cards in a dialog. */
+.terms-strip{margin-top:12px;width:100%;display:flex;align-items:center;gap:14px;text-align:left;background:#fff;border:1px solid #dce7f3;border-radius:10px;padding:15px 18px}
+.terms-strip strong{display:block;font-size:13px}
+.terms-strip small{display:block;font-size:11px;color:var(--muted);margin-top:3px;font-weight:400}
+.terms-strip-arrow{margin-left:auto;color:var(--blue);font-size:18px}
+.terms-head{margin-bottom:22px}
+.terms-head .eyebrow{margin-bottom:11px}
+.terms-controls{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.terms-search input{width:100%;font-size:15px;min-height:46px}
+.terms-row{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between}
+.segmented{display:inline-flex;flex-wrap:wrap;gap:4px;background:#f1f5f9;border-radius:10px;padding:4px}
+.segmented button{border:0;background:transparent;min-height:36px;padding:6px 12px;font-size:13px;border-radius:7px;display:inline-flex;align-items:center;gap:6px;color:#3b4d66}
+.segmented button:hover{background:#e6edf5}
+.segmented button[aria-pressed="true"]{background:#fff;color:var(--blue-dark);font-weight:700;box-shadow:0 1px 3px #17304f22}
+.segmented b{font-weight:500;font-size:11px;color:var(--muted)}
+.initials{display:flex;flex-wrap:wrap;gap:4px}
+.initials button{min-width:38px;min-height:34px;padding:4px 8px;font-size:13px;border-radius:7px;border-color:#e3e9f0}
+.initials button[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
+.initials button:disabled{opacity:.35;cursor:default}
+.initials button:disabled:hover{background:#fff;border-color:#e3e9f0}
+.terms-count{font-size:13px;color:var(--muted);margin:16px 2px 10px}
+.terms-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.terms-grid>.notice{grid-column:1/-1}
+.term-tile{display:flex;flex-direction:column;align-items:flex-start;gap:6px;text-align:left;padding:13px 14px;border-radius:11px;background:#fff;border:1px solid var(--line);min-height:92px}
+.term-tile:hover{border-color:#9ab6d8;background:#fbfdff;box-shadow:0 3px 12px #17304f14}
+.term-tile-label{font-weight:700;font-size:15px;line-height:1.4;word-break:keep-all;overflow-wrap:anywhere}
+.term-tile-meta{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
+.term-tile-tags{display:flex;gap:4px;margin-top:auto}
+.term-tile-tags .term-tag{margin:0}
+.term-tag.concept{color:#164780;background:#e8f1fd}
+.terms-more{display:block;margin:18px auto 8px;min-width:220px}
+#term-dialog{width:min(920px,calc(100vw - 28px))}
+#term-dialog-body .concept-card:last-child{margin-bottom:0}
+#term-dialog .dialog-actions{margin-top:16px}
+@media(min-width:851px){.terms-controls{position:sticky;top:0;z-index:2;box-shadow:0 6px 14px -12px #17304f55}}
+@media(max-width:560px){.terms-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}.term-tile{min-height:80px;padding:11px 12px}.term-tile-label{font-size:14px}#term-dialog{padding:18px}.segmented{width:100%}.segmented button{flex:1 1 auto;justify-content:center;padding:6px 8px}.initials button{min-width:34px}}
+
+.term-tag.note{color:#1f5e3b;background:#e3f3ea}
+.note-card{border-left-color:#2f7d52}
+.note-definition{font-weight:650;color:#1f3148;font-size:16px;line-height:1.8}
+.note-explanation{margin:6px 0 0;padding-left:20px}
+.note-explanation li{margin:4px 0}
+.note-examples{color:#2f4258}
+.note-examples strong{display:inline-block;margin-right:4px;padding:0 7px;border-radius:9px;background:#eef2f7;font-size:12px;color:#3b4d66}

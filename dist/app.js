@@ -132,8 +132,8 @@ function renderConcept(entry){
     card.append(body);return card;
 }
 const conceptLabels=new Map();
-function renderConcepts(concepts){
-    const target=$('#concepts');target.replaceChildren();
+function renderConcepts(concepts,target=$('#concepts'),relatedLead='질문한 개념의 정리는 아직 없습니다. 상위 개념 정리 보기: '){
+    target.replaceChildren();
     if(!concepts?.length)return;
     for(const c of concepts)conceptLabels.set(c.id,c.label);
     const exact=concepts.filter(c=>c.match!=='related'),related=concepts.filter(c=>c.match==='related');
@@ -143,14 +143,13 @@ function renderConcepts(concepts){
     }
     if(related.length){
         // A broader entry that only contains the asked word is offered, not shown as the answer.
-        const row=el('p',undefined,'concept-related');row.append(document.createTextNode('질문한 개념의 정리는 아직 없습니다. 상위 개념 정리 보기: '));
+        const row=el('p',undefined,'concept-related');row.append(document.createTextNode(relatedLead));
         for(const entry of related){const b=el('button',`${entry.label} (${entry.parent||entry.area})`,'citation-chip');b.type='button';b.onclick=()=>{row.after(renderConcept(entry));b.disabled=true;};row.append(b);}
         target.append(row);
     }
 }
-function renderTerms(terms){
+function renderTerms(terms,target=$('#concepts')){
     // Straight from the books' back-of-book indexes: the sentences that define or explain the term (definitions first), then the other pages that list it.
-    const target=$('#concepts');
     for(const term of terms||[]){
         const card=el('article',undefined,'concept-card term-card');
         const head=el('div',undefined,'concept-head');head.append(el('span','찾아보기','badge'),el('h3',term.label));
@@ -258,9 +257,12 @@ async function ask(question,category,mode,resume=null){
     }finally{button.disabled=false;button.textContent='근거 찾기 →';$('#results').removeAttribute('aria-busy');}
 }
 $('#question-form').addEventListener('submit',async event=>{event.preventDefault();if(!csrf){await loadStatus();if(!csrf)return;}await ask($('#question').value.trim(),$('#category').value,document.querySelector('input[name=mode]:checked').value);});
-document.querySelectorAll('[data-category]').forEach(button=>button.onclick=()=>chooseCategory(button.dataset.category));
+// In the term cards view the side menu's areas filter the cards instead of the question.
+document.querySelectorAll('[data-category]').forEach(button=>button.onclick=()=>{if(!$('#terms-view').hidden){termsState.area={'문식성':1,'문법':2,'문학':4}[button.dataset.category];termsState.initial='';termsState.shown=PAGE;renderTermsView();}else chooseCategory(button.dataset.category);});
 document.querySelectorAll('[data-question]').forEach(button=>button.onclick=()=>{$('#question').value=button.dataset.question;$('#category').value=button.dataset.question.includes('피동')?'문법':'전체';$('#question').focus();});
-$('#nav-search').onclick=()=>$('#question').focus();
+$('#nav-search').onclick=()=>{showView('search');$('#question').focus();};
+$('#nav-terms').onclick=()=>showView('terms');
+$('#terms-strip').onclick=()=>showView('terms');
 $('#settings-open').onclick=()=>{$('#api-key').value='';$('#key-status').textContent=statusData?.key_configured?'키 연결됨 · 첫 해설 요청에서 API를 확인합니다.':'현재 연결된 키가 없습니다.';$('#settings-dialog').showModal();};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>document.getElementById(button.dataset.close).close());
 $('#settings-dialog').addEventListener('close',()=>{$('#api-key').value='';});
@@ -310,6 +312,122 @@ async function openSource(id,quote=''){
         $('#verify-status').textContent=qualityLabel(source)+(source.method&&source.method!=='embedded'?' · 한국어 OCR 재수행 결과':'');if(!$('#source-dialog').open)$('#source-dialog').showModal();target.scrollTop=0;
     }catch(error){notice(error.message,true);}
 }
+// 용어 카드: every term of the books' back-of-book indexes as a tile. A tile opens the same
+// cards a question naming the term gets — the written concept entry, then the index card.
+const AREAS=[[1,'문식성','literacy'],[2,'문법','grammar'],[4,'문학','literature']];
+// 7 = any of 정의(1), 개념 정리(2), 풀이(4): a card that says what the term is.
+const SCOPES={7:'설명 있는 카드',0:'모든 용어'};
+const INITIALS=['ㄱ','ㄴ','ㄷ','ㄹ','ㅁ','ㅂ','ㅅ','ㅇ','ㅈ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ','A–Z','기타'];
+const CHO='ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ',PLAIN_CHO='ㄱㄱㄴㄷㄷㄹㅁㅂㅂㅅㅅㅇㅈㅈㅊㅋㅌㅍㅎ';
+const PAGE=240;
+const termsState={items:null,loading:null,scope:7,area:0,initial:'',query:'',shown:PAGE};
+// Same spelling rule as term_index.key_of, so 재귀 대명사 and 재귀대명사 find each other.
+const termKey=text=>text.replace(/[\s\-‘’'"·]/g,'').toLowerCase();
+function initialOf(label){
+    const ch=label.replace(/^[^가-힣ㄱ-ㅎA-Za-z0-9]+/,'')[0]||'',code=ch.charCodeAt(0);
+    if(code>=0xAC00&&code<=0xD7A3)return PLAIN_CHO[Math.floor((code-0xAC00)/588)];
+    const jamo=CHO.indexOf(ch);if(jamo>=0)return PLAIN_CHO[jamo];
+    return /[A-Za-z]/.test(ch)?'A–Z':'기타';
+}
+function loadTerms(){
+    if(termsState.items)return Promise.resolve(termsState.items);
+    termsState.loading??=api('/api/terms').then(data=>{
+        termsState.items=data.items.map(([label,areas,books,flags])=>({label,areas,books,flags,compact:termKey(label),initial:initialOf(label)}));
+        return termsState.items;
+    }).finally(()=>{termsState.loading=null;});
+    return termsState.loading;
+}
+function termTile(t){
+    const tile=el('button',undefined,'term-tile');tile.type='button';
+    tile.append(el('span',t.label,'term-tile-label'));
+    const meta=el('span',undefined,'term-tile-meta'),areas=AREAS.filter(a=>t.areas&a[0]);
+    for(const [,,cls] of areas)meta.append(el('span',undefined,'category-dot '+cls));
+    meta.append(el('span',`${areas.map(a=>a[1]).join('·')} · 책 ${t.books}권`));tile.append(meta);
+    const tags=el('span',undefined,'term-tile-tags');
+    if(t.flags&4)tags.append(el('span','풀이','term-tag note'));
+    if(t.flags&1)tags.append(el('span','정의','term-tag'));
+    if(t.flags&2)tags.append(el('span','개념 정리','term-tag concept'));
+    if(tags.childNodes.length)tile.append(tags);
+    tile.onclick=()=>openTermCard(t);return tile;
+}
+function renderTermsView(){
+    const {items,scope,area}=termsState;if(!items)return;
+    const q=termKey(termsState.query);
+    const base=items.filter(t=>(!area||t.areas&area)&&(!q||t.compact.includes(q)));
+    for(const b of document.querySelectorAll('#terms-scope button')){const s=Number(b.dataset.scope);b.querySelector('b').textContent=number(base.filter(t=>!s||t.flags&s).length);b.setAttribute('aria-pressed',String(s===scope));}
+    for(const b of document.querySelectorAll('#terms-area button'))b.setAttribute('aria-pressed',String(Number(b.dataset.area)===area));
+    const scoped=base.filter(t=>!scope||t.flags&scope);
+    const counts=new Map();for(const t of scoped)counts.set(t.initial,(counts.get(t.initial)||0)+1);
+    if(termsState.initial&&!counts.get(termsState.initial))termsState.initial='';
+    const bar=$('#terms-initials');bar.replaceChildren();
+    for(const label of ['전체',...INITIALS]){
+        const value=label==='전체'?'':label,n=value?counts.get(value)||0:scoped.length;
+        const b=el('button',label);b.type='button';b.title=`${number(n)}개`;b.disabled=!n;b.setAttribute('aria-pressed',String(value===termsState.initial));
+        b.onclick=()=>{termsState.initial=value;termsState.shown=PAGE;renderTermsView();};bar.append(b);
+    }
+    const list=termsState.initial?scoped.filter(t=>t.initial===termsState.initial):scoped;
+    const where=[AREAS.find(a=>a[0]===area)?.[1]||'전체 영역',SCOPES[scope]+(termsState.initial?` · ${termsState.initial}`:'')];
+    if(termsState.query.trim())where.push(`'${termsState.query.trim()}' 포함`);
+    $('#terms-count').textContent=`${where.join(' · ')} ${number(list.length)}개`;
+    const grid=$('#terms-grid'),frag=document.createDocumentFragment();
+    for(const t of list.slice(0,termsState.shown))frag.append(termTile(t));
+    grid.replaceChildren(frag);
+    if(!list.length)grid.append(el('p',scope&&q?'이 조건에는 없습니다. 보기를 ‘모든 용어’로 넓혀 보세요.':'조건에 맞는 용어가 없습니다. 검색어를 줄이거나 영역을 넓혀 보세요.','notice'));
+    const more=$('#terms-more'),left=list.length-termsState.shown;
+    more.hidden=left<=0;more.textContent=`더 보기 (남은 ${number(left)}개)`;
+}
+let termCardSeq=0;
+async function openTermCard(t){
+    const dialog=$('#term-dialog'),body=$('#term-dialog-body'),seq=++termCardSeq;
+    $('#term-dialog-title').textContent=t.label;
+    // Each section below says for itself whether AI wrote it (the 풀이) or not (the books' own sentences).
+    $('#term-dialog-meta').textContent=`${AREAS.filter(a=>t.areas&a[0]).map(a=>a[1]).join(' · ')} · 개론서 ${t.books}권`;
+    body.replaceChildren(el('p','카드를 불러오는 중입니다.','small muted'));
+    $('#term-dialog-search').onclick=()=>{dialog.close();searchTerm(t.label);};
+    if(!dialog.open)dialog.showModal();
+    try{
+        const data=await api('/api/terms/card?q='+encodeURIComponent(t.label));
+        if(seq!==termCardSeq)return;
+        const concepts=el('div'),terms=el('div');
+        renderConcepts(data.concepts,concepts,'이 용어만 다룬 정리는 아직 없습니다. 관련 개념 정리 보기: ');renderTerms(data.terms,terms);
+        body.replaceChildren(...(data.note?[renderNote(data.note)]:[]),concepts,terms);
+    }catch(error){if(seq===termCardSeq)body.replaceChildren(el('p',error.message,'notice error'));}
+}
+function renderNote(note){
+    // Written ahead of time from the books' paragraphs (scripts/write_term_notes.py); every quote was checked against them.
+    const card=el('article',undefined,'concept-card note-card');
+    const head=el('div',undefined,'concept-head');head.append(el('span','풀이','badge'),el('h3',note.label),el('span','AI가 미리 씀 · 검수 전','badge concept-status'));card.append(head);
+    const body=el('div',undefined,'concept-body');
+    body.append(el('p',note.definition,'note-definition'));
+    if(note.explanation?.length){const ul=el('ul',undefined,'note-explanation');for(const s of note.explanation)ul.append(el('li',s));body.append(ul);}
+    if(note.examples?.length){const p=el('p',undefined,'note-examples');p.append(el('strong','예'),document.createTextNode(' '+note.examples.join(' · ')));body.append(p);}
+    const foot=el('div',undefined,'concept-sources');foot.append(el('p','근거 · 누르면 그 쪽을 열고 근거 구절을 표시합니다.','small muted'));
+    const pages=new Map();for(const c of note.citations){if(!pages.has(c.id))pages.set(c.id,{source:c,quotes:[]});pages.get(c.id).quotes.push(c.quote);}
+    const row=el('div',undefined,'inline-citations');for(const {source,quotes} of pages.values())row.append(referenceButton(source,quotes));foot.append(row);
+    foot.append(el('p',`개론서 문단만 근거로 AI(${note.model||'언어 모델'})가 미리 쓴 풀이입니다. 보는 동안에는 AI를 쓰지 않습니다. 인용하기 전에 원문 쪽을 확인하세요.`,'small muted'));
+    body.append(foot);card.append(body);return card;
+}
+async function searchTerm(label){
+    showView('search');$('#question').value=label;$('#category').value='전체';
+    if(!csrf){await loadStatus();if(!csrf)return;}
+    await ask(label,'전체','search');
+}
+function showView(name,push=true){
+    const terms=name==='terms';
+    $('#search-view').hidden=terms;$('#terms-view').hidden=!terms;
+    for(const [id,on] of [['#nav-search',!terms],['#nav-terms',terms]]){const b=$(id);b.classList.toggle('active',on);if(on)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}
+    // The back button returns from the cards to the question page.
+    if(push&&(location.hash==='#terms')!==terms)history.pushState(null,'',terms?'#terms':location.pathname+location.search);
+    if(!terms)return;
+    window.scrollTo(0,0);
+    loadTerms().then(renderTermsView).catch(error=>{$('#terms-count').textContent=error.message;});
+}
+window.addEventListener('popstate',()=>showView(location.hash==='#terms'?'terms':'search',false));
+let termsTyping=null;
+$('#terms-filter').addEventListener('input',event=>{clearTimeout(termsTyping);termsTyping=setTimeout(()=>{termsState.query=event.target.value;termsState.initial='';termsState.shown=PAGE;renderTermsView();},120);});
+document.querySelectorAll('#terms-scope button').forEach(b=>b.onclick=()=>{termsState.scope=Number(b.dataset.scope);termsState.shown=PAGE;renderTermsView();});
+document.querySelectorAll('#terms-area button').forEach(b=>b.onclick=()=>{termsState.area=Number(b.dataset.area);termsState.shown=PAGE;renderTermsView();});
+$('#terms-more').onclick=()=>{termsState.shown+=PAGE;renderTermsView();};
 window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPrompt=event;$('#install').hidden=false;});$('#install').onclick=async()=>{if(installPrompt){await installPrompt.prompt();installPrompt=null;$('#install').hidden=true;}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 window.addEventListener('offline',()=>notice('오프라인입니다. 새 원문 검색과 AI 해설은 로컬 서버 연결 후 사용할 수 있습니다.'));
@@ -329,6 +447,7 @@ if(restored?.question){
     if(restored.data)renderResults(restored.data,true);
     else if(restored.job)ask(restored.question,restored.category,restored.mode,restored);
 }
+if(location.hash==='#terms')showView('terms',false);
 loadStatus().then(()=>{
     // The 해설 button depends on the key and today's count, which only the status knows.
     if(shown)renderEscalate(shown);

@@ -144,6 +144,29 @@ class HTTPTests(unittest.TestCase):
     def test_assets(self):
         for path in ['/','/app.js','/style.css','/ux.css','/manifest.webmanifest','/sw.js','/icon-192.png','/icon-512.png']:
             with self.request(path) as r:self.assertEqual(r.status,200)
+    def test_term_list_and_card(self):
+        import gzip
+        with self.request('/api/terms') as r:plain=json.load(r)
+        with self.request('/api/terms',headers={'Accept-Encoding':'gzip'}) as r:
+            self.assertEqual(r.headers['Content-Encoding'],'gzip');zipped=json.loads(gzip.decompress(r.read()))
+        self.assertEqual(plain,zipped);self.assertGreater(len(plain['items']),6000)
+        with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('관형절')) as r:data=json.load(r)
+        self.assertIn('관형사절',data['terms'][0]['label'])
+        # The same cards a question naming the term gets: 안은문장 names 관형절 only as an alias,
+        # and the books define 관형절, so the entry is offered as background.
+        with self.request('/api/ask',{'question':'관형절','category':'전체','mode':'search'}) as r:asked=json.load(r)
+        self.assertEqual([(c['id'],c['match']) for c in data['concepts']],[(c['id'],c['match']) for c in asked['concepts']])
+        # A card is about the whole term: one word of it (순서) does not bring in 서술 시간.
+        with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('말차례 순서 정하기')) as r:data=json.load(r)
+        self.assertEqual(data['concepts'],[])
+        with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('안긴문장')) as r:data=json.load(r)
+        self.assertEqual([(c['label'],c['match']) for c in data['concepts']],[('안은문장','exact')])
+        # A concept no index names still opens as a card.
+        with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('국어의 통시적 변화')) as r:data=json.load(r)
+        self.assertEqual(data['terms'],[]);self.assertEqual(data['concepts'][0]['match'],'exact')
+        for q in ['','zxqv%20%EC%97%86%EB%8A%94%20%EC%9A%A9%EC%96%B4']:
+            with self.assertRaises(HTTPError) as e:self.request('/api/terms/card?q='+q)
+            self.assertIn(e.exception.code,(400,404))
 
 if __name__=='__main__':unittest.main(verbosity=2)
 
@@ -206,6 +229,53 @@ class TermIndexTests(unittest.TestCase):
         import sys;sys.path.insert(0,str(core.ROOT/'scripts'))
         from build_term_index import entries
         self.assertEqual(list(entries('명사구    Z73, 321\n명사형 어미     17l, 176')),[('명사구',[273,321]),('명사형 어미',[171,176])])
+    def test_catalog_lists_every_card_once(self):
+        from term_index import catalog,display_label,key_of,DEFINED,CONCEPT
+        items=catalog()
+        labels=[i[0] for i in items]
+        self.assertEqual(len(labels),len({key_of(l) for l in labels}))
+        # Every term that carries a defining sentence is on the list.
+        self.assertEqual(sum(1 for i in items if i[3]&DEFINED),959)
+        # A written concept no index names is a card of its own.
+        self.assertIn('국어의 통시적 변화',labels)
+        self.assertEqual(next(i for i in items if i[0]=='국어의 통시적 변화')[3],CONCEPT)
+        # Headings standing in for a missing index do not become cards.
+        self.assertNotIn('할 수도 없었다',labels)
+        # A work title gets its bracket back, and the card is still found by the index's spelling.
+        self.assertIn('〈광장〉',labels);self.assertNotIn('〈광장)',labels)
+        self.assertEqual(display_label('「봄봄J'),'「봄봄」');self.assertEqual(display_label('《사슴}'),'《사슴》')
+        self.assertEqual(display_label('<이춘풍전>의 세태 소설적 특성'),'<이춘풍전>의 세태 소설적 특성')
+        # Jamo the scan read as Latin letters, fixed from the page: E is ㄷ in one book, ㄹ in another.
+        self.assertIn('ㄷ 불규칙',labels);self.assertIn('ㄹ의 비음화',labels);self.assertEqual(display_label('r등신불J'),'「등신불」')
+        # 가나다 order: Hangul first, a lone jamo heading its consonant, then Latin, then numbers.
+        self.assertLess(labels.index('ㄴ 첨가'),labels.index('나관중'));self.assertLess(labels.index('꿈하늘'),labels.index('ㄴ 첨가'))
+        self.assertLess(labels.index('힘의 전략'),labels.index('SQ3R 모형'));self.assertLess(labels.index('SQ3R 모형'),labels.index('2015 개정 교육과정'))
+    def test_notes_are_read_ahead_and_cite_library_pages(self):
+        from term_index import notes,note,catalog,NOTE,key_of
+        written=notes()
+        if not written:self.skipTest('data/term-notes.json이 없습니다')
+        items={key_of(i[0]):i for i in catalog()}
+        shown=[k for k in written if k in items]
+        self.assertGreater(len(shown),0.95*len(written))
+        for k in shown[:50]:
+            self.assertTrue(items[k][3]&NOTE)
+            n=note(items[k][0])
+            self.assertTrue(n['definition'])
+            self.assertTrue(n['citations'] and all(c['id'] and c['quote'] for c in n['citations']))
+    def test_card_is_the_term_itself_from_every_area(self):
+        from term_index import card,match_terms
+        hit=card('관형절')[0]
+        # The school-grammar name and the books' name are one card, as in a question.
+        self.assertIn('관형사절',hit['label']);self.assertTrue(hit['sources'][0]['quote'])
+        # 시점 is not answered with 전지적 작가 시점 or any other term containing it.
+        self.assertEqual({h['key'] for h in card('시점')},{'시점'})
+        self.assertEqual(card('zxqv 없는 용어'),[])
+        self.assertTrue(card('〈광장〉'))
+        # A label fixed into one already indexed is one card with both books' pages:
+        # 국어음운론 강의 prints its heading L ’첨가.
+        books={s['book'] for s in card('ㄴ 첨가')[0]['sources']}
+        self.assertTrue({'국어음운론 강의','한국어문법총론 1'}<=books)
+        self.assertEqual({s['book'] for s in match_terms('ㄴ 첨가','문법')[0]['sources']},books)
 
 class QuotaTests(unittest.TestCase):
     def test_memory_quota_counts_the_day_and_refunds(self):
