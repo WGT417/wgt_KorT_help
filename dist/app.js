@@ -26,24 +26,40 @@ function appendCitations(target,citations,sources){
     for(const [id,quotes] of grouped){const source=sources.find(s=>s.source_id===id);if(source)span.append(referenceButton(source,quotes));}
     target.append(span);
 }
+// Numbering follows Korean document order: section 1. → subsection 가. → point ①.
+const circled='①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳',hangulOrder='가나다라마바사아자차카타파하';
+function numberedHeading(tag,mark,title,markClass){const h=el(tag);h.append(el('span',mark,markClass),el('span',title));return h;}
 function renderPoints(target,points,sources){
-    for(const point of points||[]){
-        const block=el('div',undefined,'explanation-point');const p=el('p');
-        if(point.label)p.append(el('strong',point.label+' '));
-        p.append(document.createTextNode(point.text));block.append(p);
-        if(point.examples?.length){const examples=el('ul',undefined,'example-list');for(const example of point.examples)examples.append(el('li',example));block.append(examples);}
-        appendCitations(block,point.citations,sources);target.append(block);
-    }
+    if(!points?.length)return;
+    const list=el('ol',undefined,'explanation-points');
+    points.forEach((point,i)=>{
+        const item=el('li',undefined,'explanation-point');item.append(el('span',circled[i]||`(${i+1})`,'point-num'));
+        if(point.label)item.append(el('p',point.label,'point-label'));
+        item.append(el('p',point.text,'point-text'));
+        if(point.examples?.length){const box=el('div',undefined,'point-examples');box.append(el('span','예','example-tag'));const examples=el('ul',undefined,'example-list');for(const example of point.examples)examples.append(el('li',example));box.append(examples);item.append(box);}
+        if(point.citations?.length){const refs=el('div',undefined,'point-refs');refs.append(el('span','근거','refs-tag'));appendCitations(refs,point.citations,sources);item.append(refs);}
+        list.append(item);
+    });
+    target.append(list);
 }
 function renderExplanation(answer,sources){
-    const article=el('article',undefined,'explanation');article.append(el('h3',answer.title,'explanation-title'));
-    for(const section of answer.sections||[]){
-        const part=el('section',undefined,'explanation-section');part.append(el('h4',section.title));renderPoints(part,section.points,sources);
-        for(const sub of section.subsections||[]){const child=el('section',undefined,'explanation-subsection');child.append(el('h5',sub.title));renderPoints(child,sub.points,sources);part.append(child);}
-        article.append(part);
+    const article=el('article',undefined,'explanation');
+    const top=el('div',undefined,'explanation-top');top.append(el('span','AI 해설','badge ai-badge'),el('span','개론서 원문을 근거로 작성 · '+(answer.validation||'항목마다 근거 쪽을 표시했습니다.'),'small muted'));
+    article.append(top,el('h3',answer.title,'explanation-title'));
+    const sections=answer.sections||[];
+    if(sections.length>=3){
+        const toc=el('nav',undefined,'explanation-toc');toc.setAttribute('aria-label','해설 차례');toc.append(el('p','차례','toc-label'));
+        const ol=el('ol');sections.forEach((section,i)=>{const li=el('li'),a=el('a');a.href='#ai-section-'+(i+1);a.append(el('span',`${i+1}.`,'toc-num'),document.createTextNode(section.title));li.append(a);ol.append(li);});
+        toc.append(ol);article.append(toc);
     }
+    sections.forEach((section,i)=>{
+        const part=el('section',undefined,'explanation-section');part.id='ai-section-'+(i+1);
+        part.append(numberedHeading('h4',String(i+1),section.title,'section-num'));renderPoints(part,section.points,sources);
+        (section.subsections||[]).forEach((sub,j)=>{const child=el('section',undefined,'explanation-subsection');child.append(numberedHeading('h5',`${hangulOrder[j]||j+1}.`,sub.title,'sub-num'));renderPoints(child,sub.points,sources);part.append(child);});
+        article.append(part);
+    });
     if(answer.summary?.rows?.length){
-        const section=el('section',undefined,'summary-section');section.append(el('h4','종합 일람표'));
+        const section=el('section',undefined,'explanation-section summary-section');section.append(numberedHeading('h4','표','종합 일람표','section-num summary-num'));
         const scroll=el('div',undefined,'table-scroll');scroll.tabIndex=0;scroll.setAttribute('role','region');scroll.setAttribute('aria-label','개념 종합 일람표');
         const table=el('table',undefined,'concept-table');table.append(el('caption','분류와 핵심 내용을 한눈에 정리했습니다. 출처를 누르면 해당 근거를 확인할 수 있습니다.'));
         const head=el('thead'),tr=el('tr');for(const label of [...answer.summary.columns,'출처']){const th=el('th',label);th.scope='col';tr.append(th);}head.append(tr);table.append(head);
