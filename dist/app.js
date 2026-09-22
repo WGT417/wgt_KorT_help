@@ -6,7 +6,7 @@ function el(tag,text,cls){const node=document.createElement(tag);if(text!==undef
 function notice(text,isError=false){const target=$('#feedback');target.replaceChildren();if(text)target.append(el('p',text,'notice'+(isError?' error':'')));}
 let adminToken='';try{adminToken=localStorage.getItem('adminToken')||'';}catch{}
 function authHeaders(extra={}){return adminToken?{...extra,'X-Admin-Token':adminToken}:extra;}
-async function api(path,body,retried=false){const response=await fetch(path,body===undefined?{headers:authHeaders()}:{method:'POST',headers:authHeaders({'Content-Type':'application/json','X-CSRF-Token':csrf}),body:JSON.stringify(body)});let result;try{result=await response.json();}catch{throw new Error(response.ok?'서버 응답을 읽지 못했습니다. 다시 시도해 주세요.':'서버 응답이 늦어 연결이 끊겼습니다. 잠시 후 다시 시도해 주세요.');}if(!response.ok){if(response.status===403&&result.csrf_expired&&!retried&&body!==undefined){await loadStatus();return api(path,body,true);}throw new Error(result.error||'요청을 처리하지 못했습니다.');}if(path==='/api/status'){$('#settings-open').hidden=result.public?false:Boolean(result.key_configured);$('#settings-label').textContent=result.public?'관리자':'연결 설정';}return result;}
+async function api(path,body,retried=false){const response=await fetch(path,body===undefined?{headers:authHeaders()}:{method:'POST',headers:authHeaders({'Content-Type':'application/json','X-CSRF-Token':csrf}),body:JSON.stringify(body)});let result;try{result=await response.json();}catch{throw new Error(response.ok?'서버 응답을 읽지 못했습니다. 다시 시도해 주세요.':'서버 응답이 늦어 연결이 끊겼습니다. 잠시 후 다시 시도해 주세요.');}if(!response.ok){if(response.status===403&&result.csrf_expired&&!retried&&body!==undefined){await loadStatus();return api(path,body,true);}throw Object.assign(new Error(result.error||'요청을 처리하지 못했습니다.'),{status:response.status});}if(path==='/api/status'){$('#settings-open').hidden=result.public?false:Boolean(result.key_configured);$('#settings-label').textContent=result.public?'관리자':'연결 설정';}return result;}
 function quotaText(q){if(!q)return '';if(q.admin)return '관리자 · AI 해설 제한 없음';if(q.unavailable)return 'AI 해설 일시 중단';if(q.unlimited)return '';return `오늘 남은 AI 해설 ${q.remaining}회 / 전체 ${q.limit}회`;}
 function showQuota(q){if(!q||q.unlimited)return;const text=quotaText(q);if(text)$('#side-connection').textContent=text;$('#connection-dot').classList.toggle('off',Boolean(q.unavailable||q.remaining===0));}
 async function loadStatus(){try{statusData=await api('/api/status');csrf=statusData.csrf;const books=statusData.books;for(const cat of ['문식성','문법','문학']){const count=books.filter(b=>b.category===cat).length;$('#count-'+cat).textContent=count;$('#card-count-'+cat).textContent=count+'권';}const done=books.reduce((a,b)=>a+b.processed,0),total=books.reduce((a,b)=>a+b.pages,0);$('#index-title').textContent=`${books.length}권의 개론서를 함께 살펴봅니다`;$('#index-detail').textContent=`${number(statusData.reading_pages)} / ${number(total)}페이지 문단 정리 · 띄어쓰기 자동 처리${statusData.semantic_search?' · 뜻으로도 찾기':''}`;$('#index-badge').textContent=statusData.ocr?.status==='running'?`OCR 보완 ${statusData.ocr.done}/${statusData.ocr.total}`:statusData.reading_pages===total&&total?'문단 정리 완료':'문단 정리 중';$('#side-connection').textContent=statusData.key_configured?(statusData.public?'AI 해설 사용 가능':'OpenAI 키 연결됨'):'원문 검색 사용 가능';$('#mode-label').textContent=statusData.public?(statusData.admin?'공개 서재 · 관리자':'공개 서재 · AI 해설 하루 전체 '+(statusData.quota?.limit??100)+'회'):'개인 로컬 서재';$('#key-section').hidden=Boolean(statusData.public);$('#admin-section').hidden=!statusData.public;$('#settings-title').textContent=statusData.public?'관리자 설정':'OpenAI 자동 연결';if(statusData.key_configured)showQuota(statusData.quota);if(!$('#settings-dialog').open)$('#key-status').textContent=statusData.key_configured?'키가 연결되어 있습니다. 첫 해설 요청에서 API 사용 가능 여부를 확인합니다.':'현재 연결된 키가 없습니다.';$('#admin-status').textContent=statusData.admin?'관리자 토큰이 확인되었습니다.':adminToken?'저장된 토큰이 서버와 일치하지 않습니다.':'현재 관리자 토큰이 없습니다.';}catch(error){notice(statusData?.public?'서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.':'로컬 서버에 연결할 수 없습니다. 앱 실행 파일로 서버를 시작해 주세요.',true);$('#side-connection').textContent='서버 연결 안 됨';}}
@@ -178,16 +178,21 @@ function renderTerms(terms){
         target.append(card);
     }
 }
-function renderResults(data){
-    $('#welcome').hidden=true;$('#results').hidden=false;
-    renderConcepts(data.concepts);renderTerms(data.terms);
-    $('#result-title').textContent=data.question;$('#route-badge').textContent=data.ai_used?'개론서 근거 기반 해설':'원문 검색';
-    $('#route-reason').textContent=data.ai_used?'각 설명의 출처를 누르면 인용한 원문을 확인할 수 있습니다.':data.route_reason;notice(data.notice);
-    if(data.quota)showQuota(data.quota);
+let shown=null;
+function renderEscalate(data){
     const quotaInfo=data.quota||statusData?.quota;  // 원문 검색 응답에는 횟수가 없으므로 상태 값으로 보충
     const quotaLeft=quotaInfo&&!quotaInfo.admin&&!quotaInfo.unlimited&&!quotaInfo.unavailable?quotaInfo.remaining:null;
     const escalate=$('#escalate');escalate.replaceChildren();
     if(!data.ai_used&&data.sources.length&&statusData?.key_configured&&quotaLeft!==0&&!quotaInfo?.unavailable){const go=el('button','이 개념 해설 보기 →','primary');go.type='button';go.onclick=()=>ask(data.question,$('#category').value,'reason');escalate.append(go,el('span','찾은 원문을 바탕으로 여러 개론서의 관점을 정리한 해설을 작성합니다. OpenAI API를 사용합니다.'+(quotaLeft!==null&&quotaLeft!==undefined?` 오늘 서재에 남은 해설 ${quotaLeft}회.`:''),'small muted'));}
+}
+function renderResults(data,restoring=false){
+    shown=data;
+    $('#welcome').hidden=true;$('#results').hidden=false;
+    renderConcepts(data.concepts);renderTerms(data.terms);
+    $('#result-title').textContent=data.question;$('#route-badge').textContent=data.ai_used?'개론서 근거 기반 해설':'원문 검색';
+    $('#route-reason').textContent=data.ai_used?'각 설명의 출처를 누르면 인용한 원문을 확인할 수 있습니다.':data.route_reason;notice(data.notice);
+    if(data.quota&&!restoring)showQuota(data.quota);  // a saved count is stale; loadStatus shows today's
+    renderEscalate(data);
     const answer=$('#answer');answer.replaceChildren();
     if(data.answer)answer.append(renderExplanation(data.answer,data.sources));
     const bookCount=new Set(data.sources.map(s=>s.book_id)).size;
@@ -201,9 +206,57 @@ function renderResults(data){
         if(s.quality==='review')card.append(el('p','이 페이지는 OCR을 다시 수행한 뒤에도 오인식이 많습니다. 인용 전 원문 이미지를 확인하세요.','notice'));
         card.append(bottom);target.append(card);
     }
-    $('#results').focus({preventScroll:true});$('#results').scrollIntoView({behavior:'auto',block:'start'});
+    // On a reload the browser puts the scroll back where it was; jumping to the top would undo that.
+    if(!restoring){$('#results').focus({preventScroll:true});$('#results').scrollIntoView({behavior:'auto',block:'start'});}
 }
-async function ask(question,category,mode){const button=$('#ask-button');$('#answer').replaceChildren();$('#concepts').replaceChildren();$('#sources').replaceChildren();$('#escalate').replaceChildren();$('#results').hidden=true;button.disabled=true;button.textContent='근거 찾는 중…';$('#results').setAttribute('aria-busy','true');notice(mode==='reason'?'여러 개론서의 근거를 모아 해설을 작성하고 있습니다. 1분 남짓 걸릴 수 있습니다.':'여러 개론서에서 관련 내용을 찾고 있습니다. AI 해설은 시간이 조금 더 걸릴 수 있습니다.');try{const started=Date.now();let data=await api('/api/ask',{question,category,mode});while(data.pending){if(data.quota)showQuota(data.quota);notice(`여러 개론서의 근거를 모아 해설을 쓰고 있습니다. ${Math.round((Date.now()-started)/1000)}초 지났습니다. 조금만 더 기다려 주세요.`);data=await api('/api/ask/'+data.pending);}if(data.question!==question)throw new Error('질문과 응답이 일치하지 않아 표시하지 않았습니다. 다시 질문해 주세요.');renderResults(data);}catch(error){notice(error.message,true);}finally{button.disabled=false;button.textContent='근거 찾기 →';$('#results').removeAttribute('aria-busy');}}
+// A reload keeps what was on screen: this tab's sessionStorage holds the last answer, and while an AI 해설
+// is still being written, the job id the page chose for it, so the new page can ask the server again.
+const SAVED_ASK='lastAsk';
+function saveAsk(entry){
+    try{
+        if(!entry){sessionStorage.removeItem(SAVED_ASK);return;}
+        try{sessionStorage.setItem(SAVED_ASK,JSON.stringify(entry));}
+        catch{const {data,...rest}=entry;sessionStorage.setItem(SAVED_ASK,JSON.stringify({...rest,pending:true}));}  // too big to keep: fetch it again after a reload
+    }catch{}
+}
+function savedAsk(){try{return JSON.parse(sessionStorage.getItem(SAVED_ASK)||'null');}catch{return null;}}
+function newJobId(){try{return crypto.randomUUID();}catch{return Array.from(crypto.getRandomValues(new Uint8Array(18)),b=>b.toString(16).padStart(2,'0')).join('');}}
+async function resumeJob(entry){
+    // A reload during the first request's search finds no job yet, so give that search a minute to start it.
+    for(;;){
+        try{return await api('/api/ask/'+entry.job);}
+        catch(error){
+            if(error.status!==404)throw error;
+            if(Date.now()-entry.started>60000)throw Object.assign(new Error('새로고침하는 사이 해설을 이어 받지 못했습니다. 질문을 그대로 두었으니 다시 눌러 주세요.'),{status:404});
+        }
+        await new Promise(resolve=>setTimeout(resolve,3000));
+    }
+}
+async function ask(question,category,mode,resume=null){
+    const button=$('#ask-button');
+    $('#answer').replaceChildren();$('#concepts').replaceChildren();$('#sources').replaceChildren();$('#escalate').replaceChildren();$('#results').hidden=true;shown=null;
+    button.disabled=true;button.textContent='근거 찾는 중…';$('#results').setAttribute('aria-busy','true');
+    notice(resume?'새로고침 전에 요청한 해설을 이어서 받고 있습니다.':mode==='reason'?'여러 개론서의 근거를 모아 해설을 작성하고 있습니다. 1분 남짓 걸릴 수 있습니다.':'여러 개론서에서 관련 내용을 찾고 있습니다. AI 해설은 시간이 조금 더 걸릴 수 있습니다.');
+    const entry=resume||{question,category,mode,started:Date.now(),pending:true};
+    if(mode==='reason'&&!entry.job)entry.job=newJobId();
+    saveAsk(entry);
+    try{
+        let data=resume?await resumeJob(entry):await api('/api/ask',{question,category,mode,job:entry.job});
+        while(data.pending){
+            if(data.quota)showQuota(data.quota);
+            if(data.pending!==entry.job){entry.job=data.pending;saveAsk(entry);}
+            notice(`여러 개론서의 근거를 모아 해설을 쓰고 있습니다. ${Math.round((Date.now()-entry.started)/1000)}초 지났습니다. 조금만 더 기다려 주세요.`);
+            data=await api('/api/ask/'+data.pending);
+        }
+        if(data.question!==question)throw new Error('질문과 응답이 일치하지 않아 표시하지 않았습니다. 다시 질문해 주세요.');
+        renderResults(data);saveAsk({question,category,mode,job:entry.job,started:entry.started,data});
+    }catch(error){
+        notice(error.message,true);
+        // The server answered with an error, so there is nothing left to wait for. A dropped connection
+        // (no status) may still have a job running, and a reload will ask for it again.
+        if(error.status||!entry.job)saveAsk({question,category,mode});
+    }finally{button.disabled=false;button.textContent='근거 찾기 →';$('#results').removeAttribute('aria-busy');}
+}
 $('#question-form').addEventListener('submit',async event=>{event.preventDefault();if(!csrf){await loadStatus();if(!csrf)return;}await ask($('#question').value.trim(),$('#category').value,document.querySelector('input[name=mode]:checked').value);});
 document.querySelectorAll('[data-category]').forEach(button=>button.onclick=()=>chooseCategory(button.dataset.category));
 document.querySelectorAll('[data-question]').forEach(button=>button.onclick=()=>{$('#question').value=button.dataset.question;$('#category').value=button.dataset.question.includes('피동')?'문법':'전체';$('#question').focus();});
@@ -267,5 +320,20 @@ const modeDescriptions={
 function updateModeDescription(){const selected=document.querySelector('input[name="mode"]:checked');$('#question-help').textContent=modeDescriptions[selected.value];}
 document.querySelectorAll('input[name="mode"]').forEach(input=>input.addEventListener('change',updateModeDescription));
 updateModeDescription();
-loadStatus();setInterval(()=>{if(!document.hidden)loadStatus();},15000);
+// The brand link means "back to the start", so it drops the saved answer instead of reopening it.
+$('.brand').addEventListener('click',()=>saveAsk(null));
+const restored=savedAsk();
+if(restored?.question){
+    $('#question').value=restored.question;if(restored.category)$('#category').value=restored.category;
+    // Drawn before the page finishes loading, so the browser can put the reader back at the same scroll position.
+    if(restored.data)renderResults(restored.data,true);
+    else if(restored.job)ask(restored.question,restored.category,restored.mode,restored);
+}
+loadStatus().then(()=>{
+    // The 해설 button depends on the key and today's count, which only the status knows.
+    if(shown)renderEscalate(shown);
+    // A plain search cut off by the reload costs nothing to run again (it needs the CSRF token from the status).
+    else if(restored?.pending&&!restored.data&&!restored.job&&restored.mode==='search'&&csrf)ask(restored.question,restored.category,'search');
+});
+setInterval(()=>{if(!document.hidden)loadStatus();},15000);
 

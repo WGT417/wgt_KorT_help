@@ -83,6 +83,7 @@ def reason(query,sources):
 # process, which is enough because deploy.json runs one instance.
 AI_WAIT=48
 AI_JOBS={};JOBS_LOCK=threading.Lock()
+JOB_ID=re.compile(r'[A-Za-z0-9_-]{16,40}')
 
 def refund_quota(admin):
     if admin or QUOTA is None:return
@@ -108,11 +109,12 @@ def generate(job,query,category,state,admin):
     finally:
         AI_LOCK.release();strip_sources(result);job['done'].set()
 
-def start_job(result,query,category,state,admin):
+def start_job(result,query,category,state,admin,wanted=None):
+    # The page names the job before sending, so a reload during the first AI_WAIT can still ask for it.
     job={'done':threading.Event(),'result':result,'question':query,'quota':state,'at':time.monotonic()}
-    job_id=secrets.token_urlsafe(18)
     with JOBS_LOCK:
         for old in [k for k,j in AI_JOBS.items() if time.monotonic()-j['at']>1800]:del AI_JOBS[old]
+        job_id=wanted if isinstance(wanted,str) and JOB_ID.fullmatch(wanted) and wanted not in AI_JOBS else secrets.token_urlsafe(18)
         AI_JOBS[job_id]=job
     threading.Thread(target=generate,args=(job,query,category,state,admin),daemon=True).start()
     return job_id
@@ -250,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not allowed:
                             result['notice']=('지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 중단했습니다. 원문 검색과 개념 정리는 계속 이용할 수 있습니다.' if state.get('unavailable')
                                 else f"오늘 서재 전체에 열어 둔 AI 해설 {quota.LIMIT}회를 모두 사용했습니다. 한국 시각 자정에 다시 채워지며, 원문 검색과 개념 정리는 계속 볼 수 있습니다.")
-                        else:job_id=start_job(result,query,category,state,self.is_admin())
+                        else:job_id=start_job(result,query,category,state,self.is_admin(),body.get('job'))
                     finally:
                         if job_id is None:AI_LOCK.release()  # otherwise the job's thread releases it
                     if job_id:return self.send(200,wait_job(job_id,AI_JOBS[job_id],started+AI_WAIT))

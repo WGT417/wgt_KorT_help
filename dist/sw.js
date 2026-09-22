@@ -1,4 +1,4 @@
-const CACHE='korean-library-shell-v25';
+const CACHE='korean-library-shell-v26';
 const SHELL=['/','/style.css','/ux.css','/app.js','/icon.svg','/icon-192.png','/icon-512.png','/manifest.webmanifest'];
 // Both the install copy and each page load ask the server again, so a deploy shows up on the next load instead of after the browser cache expires.
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL.map(path=>new Request(path,{cache:'reload'})))));self.skipWaiting();});

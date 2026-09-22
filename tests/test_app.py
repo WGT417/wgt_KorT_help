@@ -1,4 +1,4 @@
-import sys, unittest, json, threading, io, tempfile, time
+import sys, unittest, json, threading, io, tempfile, time, secrets
 from pathlib import Path
 from unittest.mock import patch
 from urllib.request import Request,urlopen
@@ -271,6 +271,22 @@ class PublicModeTests(unittest.TestCase):
         self.assertTrue(server.AI_LOCK.acquire(blocking=False));server.AI_LOCK.release()
         with self.assertRaises(HTTPError) as e:self.request('/api/ask/'+'x'*20)
         self.assertEqual(e.exception.code,404)
+    def test_page_named_job_can_be_asked_for_after_a_reload(self):
+        # The page picks the job id before sending, so a reload inside the first AI_WAIT still finds the answer.
+        def slow(query,sources):time.sleep(1.5);return {'title':'slow mock'}
+        def start(job):
+            with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'reason','job':job},{'X-Admin-Token':'test-admin-token'}) as r:first=json.load(r)  # more asks than the day's 3
+            for _ in range(10):
+                with self.request('/api/ask/'+first['pending']) as r:data=json.load(r)
+                if not data.get('pending'):break
+            return first['pending'],data
+        wanted='reload-test-'+secrets.token_urlsafe(12)
+        with patch.object(server,'AI_WAIT',0),patch.object(server,'reason',side_effect=slow):
+            job,data=start(wanted)
+            self.assertEqual(job,wanted);self.assertEqual(data['answer'],{'title':'slow mock'})
+            # An id already taken, or one that is not a plain token, gets a fresh one from the server.
+            for bad in [wanted,'bad id!','x'*41,123]:
+                job,data=start(bad);self.assertNotEqual(job,bad);self.assertEqual(data['answer'],{'title':'slow mock'})
     def test_unexpected_generation_error_refunds_and_frees_the_lock(self):
         with patch.object(server,'reason',side_effect=KeyError('boom')):data=self.ask()
         self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('만들지 못했습니다',data['notice'])
