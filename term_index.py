@@ -105,7 +105,7 @@ LABEL_FIXES={
     '박지원朴빠源':'박지원','구우많佑':'구우','가전假따':'가전','비장悲밤':'비장',
     # One syllable the scan read as its look-alike (scripts/audit_glyphs.PAIRS).
     '대둥합성어':'대등합성어','겸손볍':'겸손법','문볍용어':'문법용어','시용역':'사용역',
-    '상정 부사':'상징 부사','지음체계':'자음 체계','김기립':'김기림','한자어 병사':'한자어 명사',
+    '상정 부사':'상징 부사','상정부사':'상징 부사','지음체계':'자음 체계','김기립':'김기림','한자어 병사':'한자어 명사',
     '일인칭 관찰자시접':'일인칭 관찰자 시점','국힌 문체':'국한문체','대웅적 진술':'대응적 진술',
     # A jamo the books quote, left as a letter or a look-alike syllable.
     'λ ’ 불규칙':'ㅅ 불규칙','λ ’불규칙 형용사':'ㅅ 불규칙 형용사','人-불규칙 어간':'ㅅ 불규칙 어간',
@@ -120,6 +120,26 @@ LABEL_FIXES={
     '러’ 불규칙 형용사':'러 불규칙 형용사','르’ 불규칙 활용':'르 불규칙 활용','르’ 불규칙 형용사':'르 불규칙 형용사',
     '여’ 불규칙 동사':'여 불규칙 동사','여’ 불규칙 형용사':'여 불규칙 형용사','오’ 불규칙 동사':'오 불규칙 동사',
     '우’ 불규칙 동사':'우 불규칙 동사','불규칙형용사,':'불규칙 형용사','기’ 명사절':'기 명사절',
+    # 고전시가작품론 indexes a 시조 by its opening line, and the scan is an OCR layer
+    # (the pages' font is HiddenHorzOCR) made by an engine that does not know 옛한글:
+    # ᄒᆞᆫ came out 흔, ᄆᆞᆰ다 붉다, 막ᄃᆡ 막덕/막믹. The reading is settled by the page's
+    # own 지은이·출전 and the poem printed under it.
+    '흔손에막덕잡고':'한 손에 막대 잡고',        # 우탁, 청구영언(육당본) 232쪽
+    '개를여라븐이나기르되':'개를 여라믄이나 기르되',  # 사설시조, 청구영언(진본) 351쪽
+    '창내고자창을내고자':'창 내고자 창을 내고자',   # 사설시조, 청구영언(진본) 342쪽
+    '나모도바히돌도':'나모도 바히돌도',          # 사설시조, 청구영언(진본) 358쪽
+    '가마귀 검다 창고':'가마귀 검다 하고',        # 이직, 청구영언(진본) 261쪽
+    '북천이 붉다커늘':'북천이 맑다커늘',          # 임제, 해동가요(주씨본) 306쪽
+    '어이 얼어 잘이':'어이 얼어 자리',           # 한우, 같은 쪽
+    '서검을못일우고':'서검을 못 일우고',          # 김천택, 해동가요(주씨본) 333쪽
+    '대장부공성신퇴항야':'대장부 공성신퇴하야',     # 이정보, 367쪽
+    '동통':'동동',                            # 고려가요 動動, 140쪽("아으 動動다리")
+    '가마귀검다창고':'가마귀 검다 하고',
+    # 고소설: 전(傳)의 끝 글자를 젠으로, 쇠를 죄로 읽은 제목들.
+    '「설공찬젠」':'「설공찬전」','「유충렬젠」':'「유충렬전」','「오륜전젠」':'「오륜전전」','「임씨젠」':'「임씨전」',
+    '변강죄전':'변강쇠전','콩쥐팔쥐전':'콩쥐팥쥐전','문장풍류삼대목':'문장풍류삼대록',
+    '향냥':'향낭','아니라':'아니리',            # 판소리의 아니리(白)
+    '권섭뺨燮':'권섭','김매순金週淳':'김매순','나카라이 도스이半井挑水':'나카라이 도스이',
 }
 # The books' own index headings, and what the scan left of them: a card for
 # "찾아보기" is the index itself, not a term. 답1·답2·장)·도록하·을 것이다 are
@@ -127,7 +147,8 @@ LABEL_FIXES={
 # 고시조를 고전시가작품론 찾아보기가 첫 구로 싣는다 — 흔손에막덕잡고 등.)
 JUNK={'찾아보기','색인','인영색인','잦m보기','증에}보기','찾아5ê기','칭i버{보기',
       '잦아보기-서지','찢아보기 서지','찾아보기-서지','잦아보기-전문용어','찢아보기-전문용어','찾아보기-전문용어',
-      '답1','답2','장)','도록하','을 것이다','뱃글','뱃째','통사 구성의 어휘화 단어'}
+      '답1','답2','장)','도록하','을 것이다','뱃글','뱃째','통사 구성의 어휘화 단어',
+      '찾。}보기','찾아보기-인영','찢아보기-인명'}
 JUNK_KEYS={key_of(x) for x in JUNK}
 
 def display_label(label):
@@ -139,7 +160,9 @@ def display_label(label):
     label=re.sub(r'^r\s*([^\sA-Za-z][^「」]*?)\s*J$',r'「\1」',label)
     m=re.fullmatch(r'([「〈<《『])([^「」〈〉<>《》『』()]+?)\s*[)〉>}JjＪ」》』]?',label)
     if m:label=('〈' if m[1]=='<' else m[1])+m[2].strip()+CLOSING[m[1]]
-    return label
+    # The table is looked up again: a heading may only match once its brackets and
+    # its misread syllables are mended (「설공찬젠 → 「설공찬젠」 → 「설공찬전」).
+    return LABEL_FIXES.get(label,label)
 
 CHO='ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ'
 def sort_key(label):
@@ -284,7 +307,7 @@ def _build_catalog():
         sources=[s for k in keys for s in terms[k]['sources']]
         flags=(DEFINED if any(s.get('quote') for s in sources) else 0)|(CONCEPT if named&{shown,*keys} else 0)|(NOTE if shown in written else 0)
         # The 풀이 spells the term with its spaces put back (두 자리 서 술어 → 두 자리 서술어).
-        if shown in written and key_of(written[shown]['label'])==shown:label=written[shown]['label']
+        if shown in written and key_of(written[shown]['label'])==shown:label=display_label(written[shown]['label'])
         items.append([label,sum(AREA_BIT.get(c,0) for c in {s['category'] for s in sources}),len({s['book'] for s in sources}),flags])
     # A concept named by no index heading ("국어의 통시적 변화") is still a card.
     for c in concepts:
