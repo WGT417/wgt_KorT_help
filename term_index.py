@@ -98,7 +98,38 @@ LABEL_FIXES={
     'L 다':'-ㄴ다','L 다’체':'-ㄴ다체',  # 한국현대소설의 이해 316: "'-L 다'체의 종결형"
     'l 상합자':'ㅣ 상합자',          # 국어사 개론 39: 一字中聲之與ㅣ相合者
     'OJ 수사':'양수사',              # 한국어표준문법 251: 양수사(量數詞)와 서수사
+    # A name the index also carries with its hanja: one card, the plain spelling.
+    '김동인金東仁':'김동인','김만중金萬重':'김만중','김소행金紹行':'김소행','박인량朴寅亮':'박인량',
+    '서거정徐居正':'서거정','서유영徐有英':'서유영','성임成任':'성임','수산水山':'수산',
+    '신재효申在孝':'신재효','야담野談':'야담','원호元昊':'원호','이인로李仁老':'이인로',
+    '박지원朴빠源':'박지원','구우많佑':'구우','가전假따':'가전','비장悲밤':'비장',
+    # One syllable the scan read as its look-alike (scripts/audit_glyphs.PAIRS).
+    '대둥합성어':'대등합성어','겸손볍':'겸손법','문볍용어':'문법용어','시용역':'사용역',
+    '상정 부사':'상징 부사','지음체계':'자음 체계','김기립':'김기림','한자어 병사':'한자어 명사',
+    '일인칭 관찰자시접':'일인칭 관찰자 시점','국힌 문체':'국한문체','대웅적 진술':'대응적 진술',
+    # A jamo the books quote, left as a letter or a look-alike syllable.
+    'λ ’ 불규칙':'ㅅ 불규칙','λ ’불규칙 형용사':'ㅅ 불규칙 형용사','人-불규칙 어간':'ㅅ 불규칙 어간',
+    '님’ 불규칙 동사':'ㅂ 불규칙 동사','동’불규칙 형용사':'ㅎ 불규칙 형용사','동-불규칙 어간':'ㅎ 불규칙 어간',
+    '송-구개음화':'ㅎ 구개음화','근’ 탈락 규칙':'ㄹ 탈락 규칙','(느) L':'(느)ㄴ',
+    # A quotation mark or a bracket the scan lost, and the heading it left behind.
+    '「국문관계론(國文關係論) J':'「국문관계론」','「산남(山男) J':'「산남」','「삼대(三代) J':'「삼대」',
+    '「야한기(夜寒記) J':'「야한기」','「을화(ζ火) J':'「을화」','「지맥(地版) J':'「지맥」','〈방(房))':'〈방〉',
+    '상호 융화{Ineinander)':'상호 융화','다매체 언어(M띠ti-meclia)':'다매체 언어','인정 기술 A 定記述':'인정 기술',
+    ', 김기림':'김기림',', 매체 언어':'매체 언어',', 자아( the ego)':'자아',', 최인호':'최인호',', 환상성':'환상성',
+    '거라’ 불규칙':'거라 불규칙','너라’불규칙':'너라 불규칙','러’ 불규칙 동사':'러 불규칙 동사',
+    '러’ 불규칙 형용사':'러 불규칙 형용사','르’ 불규칙 활용':'르 불규칙 활용','르’ 불규칙 형용사':'르 불규칙 형용사',
+    '여’ 불규칙 동사':'여 불규칙 동사','여’ 불규칙 형용사':'여 불규칙 형용사','오’ 불규칙 동사':'오 불규칙 동사',
+    '우’ 불규칙 동사':'우 불규칙 동사','불규칙형용사,':'불규칙 형용사','기’ 명사절':'기 명사절',
 }
+# The books' own index headings, and what the scan left of them: a card for
+# "찾아보기" is the index itself, not a term. 답1·답2·장)·도록하·을 것이다 are
+# scraps a heading line broke into. (시조 첫 구는 지우지 않는다: 제목 없는
+# 고시조를 고전시가작품론 찾아보기가 첫 구로 싣는다 — 흔손에막덕잡고 등.)
+JUNK={'찾아보기','색인','인영색인','잦m보기','증에}보기','찾아5ê기','칭i버{보기',
+      '잦아보기-서지','찢아보기 서지','찾아보기-서지','잦아보기-전문용어','찢아보기-전문용어','찾아보기-전문용어',
+      '답1','답2','장)','도록하','을 것이다','뱃글','뱃째','통사 구성의 어휘화 단어'}
+JUNK_KEYS={key_of(x) for x in JUNK}
+
 def display_label(label):
     """An index heading as the page shows it: known misreadings fixed and a work
     title's bracket closed (93 〈…) and 94 「…J among the 문학 books' headings;
@@ -202,7 +233,9 @@ def notes():
     with _lock:
         if _notes['stamp']!=stamp:
             data=json.loads(NOTES.read_text(encoding='utf-8')) if NOTES.exists() else {}
-            _notes.update(stamp=stamp,model=data.get('model'),by_key={key_of(label):n for label,n in data.get('notes',{}).items()})
+            # Keyed by the label as the page shows it, so a note written before a
+            # label was fixed still finds its card (국힌 문체 → 국한문체).
+            _notes.update(stamp=stamp,model=data.get('model'),by_key={key_of(display_label(label)):n for label,n in data.get('notes',{}).items()})
         return _notes['by_key']
 
 def note(label):
@@ -243,7 +276,7 @@ def _build_catalog():
     named={key_of(t) for c in concepts for t in c['_terms']}
     groups={}
     for k,e in terms.items():
-        if {s['book'] for s in e['sources']}<=from_headings:continue
+        if {s['book'] for s in e['sources']}<=from_headings or key_of(e['label']) in JUNK_KEYS:continue
         label=display_label(e['label'])
         groups.setdefault(key_of(label),[label,[]])[1].append(k)
     items=[]

@@ -250,6 +250,17 @@ class TermIndexTests(unittest.TestCase):
         # 가나다 order: Hangul first, a lone jamo heading its consonant, then Latin, then numbers.
         self.assertLess(labels.index('ㄴ 첨가'),labels.index('나관중'));self.assertLess(labels.index('꿈하늘'),labels.index('ㄴ 첨가'))
         self.assertLess(labels.index('힘의 전략'),labels.index('SQ3R 모형'));self.assertLess(labels.index('SQ3R 모형'),labels.index('2015 개정 교육과정'))
+    def test_the_books_own_index_headings_are_not_cards(self):
+        from term_index import catalog,JUNK,card
+        labels={i[0]:i for i in catalog()}
+        # "찾아보기" is the index itself; 답1·장)·도록하 are what a broken heading left.
+        self.assertFalse([j for j in JUNK if j in labels])
+        # A name the scan misread is one card with the right spelling, keeping both books' pages.
+        self.assertNotIn('김기립',labels);self.assertNotIn('겸손볍',labels)
+        self.assertGreaterEqual(labels['김기림'][2],4)
+        self.assertEqual({s['book'] for s in card('김기림')[0]['sources']}>={'문학의 이해'},True)
+        # A quoted jamo is named, and a work keeps the bracket the scan turned into J.
+        self.assertIn('ㅂ 불규칙 동사',labels);self.assertIn('「삼대」',labels)
     def test_notes_are_read_ahead_and_cite_library_pages(self):
         from term_index import notes,note,catalog,NOTE,key_of
         written=notes()
