@@ -176,6 +176,17 @@ class GlyphRepairTests(unittest.TestCase):
         # ‘기’는 자음 조사를 달았을 때만 ㄱ, 그 밖에는 명사형 어미 ‘-기’.
         self.assertEqual(correct_display('국어에서 ‘ 기’은 ‘ L ’ 앞에 올 수 없다.')[0],'국어에서 ‘ㄱ’은 ‘ㄴ’ 앞에 올 수 없다.')
         self.assertEqual(correct_display('(8나)처럼 ‘ 기’가 쓰이면 동작적 의미이다.')[1],0)
+    def test_e_irregular_is_the_d_irregular_of_mutda(self):
+        from text_pipeline import correct_display
+        # 책의 예가 묻다(問)·물으니, 걷다이니 ‘E’ 불규칙은 ㄷ 불규칙이다(한국어표준문법 262).
+        self.assertEqual(correct_display('나. ‘ E  ’ 불규칙 동사: 묻다(問)， 묻고， 물으니， 물어서， 물어라')[0],
+                         '나. ‘ㄷ’ 불규칙 동사: 묻다(問), 묻고, 물으니, 물어서, 물어라')
+        # 같은 글자가 자기 자신으로 바뀔 수는 없다: 걷다→걸어는 ㄷ이 ㄹ로(191).
+        self.assertEqual(correct_display('어간 말 자음 ‘ E ’이   ‘ E ’로 교체되었고')[0],'어간 말 자음 ‘ㄷ’이   ‘ㄹ’로 교체되었고')
+        # ㄹ 탈락을 불규칙으로 보는 대목은 ㄹ 불규칙이다(105, 277).
+        self.assertEqual(correct_display('‘놀다’ 둥에 대해， 어간에서  ‘ E  ’ 탈락이 일어났기 때문에  ‘ E  ’ 불규칙 활용으로')[0],
+                         '‘놀다’ 등에 대해, 어간에서  ‘ㄹ’ 탈락이 일어났기 때문에  ‘ㄹ’ 불규칙 활용으로')
+        self.assertEqual(correct_display('김종록(2008) 에서는 ‘길다’류를 ‘ E ’ 불규칙， ‘아프다’류')[0],'김종록(2008) 에서는 ‘길다’류를 ‘ㄹ’ 불규칙, ‘아프다’류')
     def test_damage_is_judged_as_the_reader_sees_it(self):
         from passage_text import ocr_damage,shown_damage
         broken='관형사절은 관형사형 어미 느(의L ’이 붙어서 관형어로 쓰이는 절이다.'

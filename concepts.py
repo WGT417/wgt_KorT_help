@@ -120,7 +120,10 @@ def resolve_sources(sources):
         for s in sources:
             row=None
             if s.get('book') and s.get('pdf_page'):
-                row=db.execute('SELECT p.id,p.printed_page,p.number_status,p.quality,b.title FROM pages p JOIN books b ON b.id=p.book_id WHERE b.title=? AND p.pdf_page=?',(s['book'],int(s['pdf_page']))).fetchone()
+                # CROSS JOIN keeps books as the outer loop, so the page is found through
+                # UNIQUE(book_id,pdf_page). Joined the other way SQLite scanned all 12,787
+                # pages with their text, 0.2–0.45s per reference and 7–10s per entry.
+                row=db.execute('SELECT p.id,p.printed_page,p.number_status,p.quality,b.title FROM books b CROSS JOIN pages p ON p.book_id=b.id AND p.pdf_page=? WHERE b.title=?',(int(s['pdf_page']),s['book'])).fetchone()
             item=dict(s)
             if row:item.update(id=row['id'],title=row['title'],printed_page=row['printed_page'],number_status=row['number_status'],quality=row['quality'])
             else:item.update(id=None,title=s.get('book'))

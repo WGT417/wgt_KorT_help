@@ -1,5 +1,9 @@
 """Layout-aware, reversible local reading text. Never rewrite source glyphs."""
 import re,statistics,hashlib,json
+from pathlib import Path
+# Resolved once: resolve() costs about 1.5ms on Windows, and correct_display
+# looked up two of these files on every call (5s for the 6,600 index labels).
+DATA_DIR=Path(__file__).resolve().parent/'data'
 VERSION='layout-spacing-v3'
 TERMS='''형태소 이형태 형태론 통사론 음운론 의미론 화용론 통사 음운 음소 변이음 음절 어절 단일어 합성어 파생어 어근 접사 접두사 접미사 선어말어미 어말어미 종결어미 연결어미 전성어미 명사형 관형사형 부사형 관형사절 명사절 부사절 인용절 서술절 안긴문장 안은문장 홑문장 겹문장 이어진문장 피동사 사동사 피동문 사동문 피동 사동 주동 능동 높임법 주체높임 객체높임 상대높임 시제 서법 동작상 본용언 보조용언 의존명사 서술격조사 보조사 격조사 주격조사 목적격조사 관형격조사 부사격조사
 독서교육 작문교육 문학교육 국어교육 과정중심 결과중심 내용생성 내용조직 고쳐쓰기 계획하기 표현하기 초인지 배경지식 의미구성 자기점검 자기조절 독해력 문식성 상향식 하향식 상호작용 심미적 비판적 창의적 능동적 자기주도적 사고구술법 소리내어읽기 브레인스토밍 협동학습 반응중심 문제해결 교수학습
@@ -90,8 +94,7 @@ def term_starts(text,gaps,raw_gaps,keys,longest,every=False):
 
 _joined={'stamp':None,'keys':frozenset(),'longest':0,'misread':{}}
 def _term_lists():
-    from pathlib import Path
-    path=Path(__file__).resolve().parent/'data'/'term-index.json'
+    path=DATA_DIR/'term-index.json'
     stamp=path.stat().st_mtime_ns if path.exists() else None
     if stamp!=_joined['stamp']:
         data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
@@ -262,8 +265,7 @@ def split_heading(raw,display):
 _corrections={'stamp':None,'words':{}}
 def corrections():
     """Display-only OCR corrections accepted by scripts/audit_glyphs.py (whole words, same length)."""
-    from pathlib import Path
-    path=Path(__file__).resolve().parent/'data'/'ocr-corrections.json'
+    path=DATA_DIR/'ocr-corrections.json'
     stamp=path.stat().st_mtime_ns if path.exists() else None
     if stamp!=_corrections['stamp']:
         words=json.loads(path.read_text(encoding='utf-8')).get('words',{}) if path.exists() else {}
@@ -274,8 +276,7 @@ _printed={'stamp':None,'words':frozenset(),'latin':frozenset()}
 def _printed_lists():
     """What the pages themselves print as one word, read off the extracted text
     rather than off the spacing model's output (scripts/audit_glyphs.py counts it)."""
-    from pathlib import Path
-    path=Path(__file__).resolve().parent/'data'/'source-words.json'
+    path=DATA_DIR/'source-words.json'
     stamp=path.stat().st_mtime_ns if path.exists() else None
     if stamp!=_printed['stamp']:
         data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
@@ -291,8 +292,7 @@ def latin_words():
 _vocabulary={'stamp':None,'words':frozenset()}
 def corpus_words():
     """Word forms the 26 books repeat (scripts/audit_glyphs.py counts them)."""
-    from pathlib import Path
-    path=Path(__file__).resolve().parent/'data'/'corpus-words.json'
+    path=DATA_DIR/'corpus-words.json'
     stamp=path.stat().st_mtime_ns if path.exists() else None
     if stamp!=_vocabulary['stamp']:
         words=json.loads(path.read_text(encoding='utf-8')).get('words',()) if path.exists() else ()
@@ -339,16 +339,28 @@ JAMO_WORD={'님':'ㅂ','표':'ㅍ','송':'ㅎ','동':'ㅎ','승':'ㅎ','종':'�
 PARTICLE={'으로':'consonant','로':'rieul','가':'vowel','를':'vowel','는':'vowel','와':'vowel',
           '이':'closed','을':'closed','은':'closed','과':'closed'}
 PARTICLE_AFTER=re.compile(r'\s*(으로|로|가|를|는|와|이|을|은|과)(?![가-힣])')
-# ‘E’ with 이/을/은/과, or with no particle at all, fits 리을 and 디귿 alike and the
-# passage does not settle it: a cue list was tried over all 156 such places and
-# turned out to read "‘E’ 불규칙 활용"(ㄹ 불규칙) and the sonorant list "‘ㄴ, E, ㅁ,
-# ㅇ’" as ㄷ, so those keep the commoner reading ㄹ. Only the particle decides.
+# ‘E’ with 이/을/은/과, or with no particle at all, fits 리을 and 디귿 alike. A broad
+# cue list (파열음, 사이시옷, 대표음…) was tried over all 156 such places and read the
+# sonorant list "‘ㄴ, E, ㅁ, ㅇ’" and 맞춤법 제8항's 받침 list as ㄷ, so the commoner
+# ㄹ stays the default. Two narrow cues do hold, each checked place by place:
+# - ‘E’ 불규칙 is ㄷ 불규칙 — the books' own examples are 묻다(問)·물으니, 걷다·깨닫다·
+#   싣다, [묻따]/[무르내] (15 of 17 places). ㄹ-final stems drop their ㄹ by rule, so
+#   ‘E’ 불규칙 is ㄹ only where the passage treats that drop as irregular, and it
+#   then names the stems or the drop: "‘놀다’… ‘E’ 탈락이 일어났기 때문에 ‘E’ 불규칙
+#   활용으로 다루기도 한다" (한국어표준문법 105), "‘길다’류를 ‘E’ 불규칙" (277).
+# - "‘E’이 ‘E’로 바뀌며" cannot name one sound turning into itself: all three places
+#   are 묻다→물어 and 걷다→걸어, ㄷ becoming ㄹ.
+IRREGULAR=re.compile(r'\s*불\s*규\s*칙')
+RIEUL_STEMS=re.compile(r"[‘'\"]\s*E\s*[’'\"]\s*탈락|놀다|길다|알다|살다|울다|날다|멀다|만들다")
+BECOMES_RIEUL=re.compile(r"\s*이\s*[‘'\"]\s*E\s*[’'\"]\s*로")
 def two_way(key,after,window):
     """The reading the particle settles; None to leave the glyph as it is."""
     m=PARTICLE_AFTER.match(after);kind=PARTICLE[m.group(1)] if m else None
     if key=='H':return 'ㅐ' if kind in {'vowel','rieul'} else 'ㅂ' if kind in {'consonant','closed'} else None
     if key=='기':return 'ㄱ' if kind in {'consonant','closed'} else None
-    return 'ㄷ' if kind=='consonant' else 'ㄹ'
+    if kind=='consonant' or BECOMES_RIEUL.match(after):return 'ㄷ'
+    if IRREGULAR.match(after):return 'ㄹ' if RIEUL_STEMS.search(window) else 'ㄷ'
+    return 'ㄹ'
 TWO_WAY={'H','E','기'}
 JAMO_CUE=re.compile(r'음소|음운|변이\s?음|자음|모음|된소리|비음|유음|경음|평음|격음|마찰음|파열음|파찰음|후\s?음|순\s?음|치조|연구개|경구개|초성|중성|종성|받침|조음|구개음|음절|자모|글자|훈민정음|해례|발음|불청|불\s?탁|상형|가획')
 # The vowels the phonology books cite come out as a digit, a hyphen and a brace:
