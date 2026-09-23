@@ -161,8 +161,10 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual([(c['id'],c['match']) for c in asked['concepts'] if c['id']=='sentence-structure/embedded'],[('sentence-structure/embedded','related')])
         self.assertEqual({c['id'] for c in data['concepts']},{c['id'] for c in asked['concepts']})
         # A card is about the whole term: one word of it (순서) does not bring in 서술 시간.
+        # The term is now an alias of 담화의 구성과 담화성 (한국어표준문법 681쪽의 구어 담화 표지),
+        # so the whole term answers and the one-word match still must not.
         with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('말차례 순서 정하기')) as r:data=json.load(r)
-        self.assertEqual(data['concepts'],[])
+        self.assertEqual([(c['id'],c['match']) for c in data['concepts']],[('meaning-pragmatics/cohesion','exact')])
         with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('안긴문장')) as r:data=json.load(r)
         self.assertEqual([(c['label'],c['match']) for c in data['concepts']],[('안은문장','exact')])
         # A concept no index names still opens as a card.
