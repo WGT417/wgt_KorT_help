@@ -127,10 +127,14 @@ RESPACE_RUN=8
 def respace(text,gaps,raw_gaps,keys=(),longest=0):
     """Glyph positions where the page printed a space and the spacing model
     closed it up. A position inside a term the books write as one word is left
-    closed, so 부사격 조사 stays 부사격조사."""
-    known=source_words()
+    closed, so 부사격 조사 stays 부사격조사; a form the books themselves mostly
+    print as two words (할수, 두개의) is not such a word and comes back spaced."""
+    known=one_word_forms()
     if not known:return set()
-    bounds=[0]+[i for i in range(1,len(text)) if raw_gaps[i]]+[len(text)]
+    # A line break is where the page ran out of room, not a word boundary, so a
+    # token that ends at one is half a word ("불리기도 하 / 며") and the word on
+    # either side is read across the break.
+    bounds=[0]+[i for i in range(1,len(text)) if re.search(r'[ \t]',raw_gaps[i])]+[len(text)]
     token={q:(a,b) for a,b in zip(bounds,bounds[1:]) for q in range(a,b)}
     out=set()
     for i in range(1,len(text)):
@@ -272,7 +276,7 @@ def corrections():
         _corrections.update(stamp=stamp,words={w:v['to'] for w,v in words.items() if len(v['to'])==len(w)})
     return _corrections['words']
 
-_printed={'stamp':None,'words':frozenset(),'latin':frozenset()}
+_printed={'stamp':None,'words':frozenset(),'latin':frozenset(),'solid':frozenset(),'often_split':frozenset()}
 def _printed_lists():
     """What the pages themselves print as one word, read off the extracted text
     rather than off the spacing model's output (scripts/audit_glyphs.py counts it)."""
@@ -280,11 +284,25 @@ def _printed_lists():
     stamp=path.stat().st_mtime_ns if path.exists() else None
     if stamp!=_printed['stamp']:
         data=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
-        _printed.update(stamp=stamp,words=frozenset(data.get('words',())),latin=frozenset(data.get('latin',())))
+        _printed.update(stamp=stamp,words=frozenset(data.get('words',())),latin=frozenset(data.get('latin',())),
+                        solid=frozenset(data.get('solid',())),often_split=frozenset(data.get('often_split',())))
+        _printed['one_word']=_printed['words']-_printed['often_split']
     return _printed
 def source_words():
     """Korean word forms the books print as one word within a line."""
     return _printed_lists()['words']
+def solid_words():
+    """Of those, the forms the books hardly ever print as two words (3% or less):
+    각각 483:0, 그것을 567:0, but not 할수 61:2,051."""
+    return _printed_lists()['solid']
+def often_split_words():
+    """Forms the books print as two words more often than as one (할수, 두개의):
+    a joined reading of one of these is the scan having lost the page's space."""
+    return _printed_lists()['often_split']
+def one_word_forms():
+    """The printed words minus those (할수, 두개의, 예를들어): what may stand
+    joined on screen where the page itself printed a space."""
+    return _printed_lists()['one_word']
 def latin_words():
     """Latin word forms the books print inside their Korean prose."""
     return _printed_lists()['latin']

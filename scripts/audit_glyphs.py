@@ -85,23 +85,33 @@ FOREIGN=re.compile(r'[Ͱ-ϿЀ-ӿ￠-￦¢©«®»™\\]')
 # may be half a word the line break cut. Latin words are collected from Korean
 # prose alone, because the pages that came out as pure scan noise would
 # otherwise fill the list with ee/oe/ae.
+SOLID_SPACED=.03   # a form the books hardly ever space: 각각 483:0, 그것을 567:0
+OFTEN_SPLIT=.5     # a form they mostly space: 할수 61:2,051, 두개의 10:184
 def printed_words(rows,minimum=3):
-    korean=Counter();latin=Counter()
+    korean=Counter();latin=Counter();split=Counter()
     for r in rows:
         for line in r['raw'].split('\n'):
             tokens=[t for t in re.split(r'[ \t]+',line.strip()) if t]
             for t in tokens[1:-1]:
                 w=re.sub(r'^[^가-힣]+|[^가-힣]+$','',t)
                 if len(w)>=2:korean[w]+=1
+            # The same form as two tokens of the line: "할 수" beside "할수".
+            for x,y in zip(tokens,tokens[1:]):
+                a=re.sub(r'[^가-힣]','',x);b=re.sub(r'[^가-힣]','',y)
+                if a and b and len(a)+len(b)<=16:split[a+b]+=1
         shown=r['display'];marks=len(re.findall(r'\S',shown))
         if marks>=40 and len(re.findall(r'[가-힣]',shown))/marks>=.35:
             for w in re.findall(r'(?<![A-Za-z])[A-Za-z]{3,}(?![A-Za-z])',shown):latin[w.lower()]+=1
     words=sorted(w for w,n in korean.items() if n>=minimum)
+    solid=sorted(w for w in words if split[w]<=SOLID_SPACED*(split[w]+korean[w]))
+    often=sorted(w for w in words if split[w]>OFTEN_SPLIT*(split[w]+korean[w]))
     romans=sorted(w for w,n in latin.items() if n>=2)
     (core.DATA/'source-words.json').write_text(json.dumps({'generated':time.strftime('%Y-%m-%d %H:%M'),
         'rule':f'쪽에서 추출한 원문에서 줄 안쪽 어절로 {minimum}회 이상 나타난 한글 낱말과, 한글 본문 안에서 2회 이상 나타난 라틴 낱말. 띄어쓰기 모델이 지운 공백을 되살릴지 판단하는 데 쓴다',
-        'words':words,'latin':romans},ensure_ascii=False),encoding='utf-8')
-    print('printed vocabulary',len(words),'Korean word forms,',len(romans),'Latin word forms',flush=True)
+        'solid_rule':f'그 가운데 같은 줄에서 두 어절로 갈라 찍힌 비율이 {SOLID_SPACED:.0%} 이하인 낱말. 책이 한 낱말로 찍는다고 보고, 원문에 공백이 없던 자리에서 띄어쓰기 모델이 넣은 공백을 지우는 데 쓴다',
+        'often_split_rule':f'거꾸로 두 어절로 찍힌 비율이 {OFTEN_SPLIT:.0%}를 넘는 낱말. 붙은 꼴은 스캔이 공백을 잃은 것으로 보고, 모델이 지운 쪽의 공백을 되살릴 때 예외로 두지 않는다',
+        'words':words,'solid':solid,'often_split':often,'latin':romans},ensure_ascii=False),encoding='utf-8')
+    print('printed vocabulary',len(words),'Korean word forms,',len(solid),'set solid,',len(often),'mostly spaced,',len(romans),'Latin word forms',flush=True)
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--limit',type=int,default=0);args=parser.parse_args()
