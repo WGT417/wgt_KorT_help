@@ -152,10 +152,14 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(plain,zipped);self.assertGreater(len(plain['items']),6000)
         with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('관형절')) as r:data=json.load(r)
         self.assertIn('관형사절',data['terms'][0]['label'])
-        # The same cards a question naming the term gets: 안은문장 names 관형절 only as an alias,
-        # and the books define 관형절, so the entry is offered as background.
+        # 안은문장 names 관형절 only as an alias and the books define 관형절, so a *question*
+        # offers the entry as background (rank_concepts). A *card* shows it: the index card is
+        # already on the same screen, so hiding the 5,000-character entry behind a chip only
+        # loses the reader the fuller treatment.
         with self.request('/api/ask',{'question':'관형절','category':'전체','mode':'search'}) as r:asked=json.load(r)
-        self.assertEqual([(c['id'],c['match']) for c in data['concepts']],[(c['id'],c['match']) for c in asked['concepts']])
+        self.assertEqual([(c['id'],c['match']) for c in data['concepts'] if c['id']=='sentence-structure/embedded'],[('sentence-structure/embedded','exact')])
+        self.assertEqual([(c['id'],c['match']) for c in asked['concepts'] if c['id']=='sentence-structure/embedded'],[('sentence-structure/embedded','related')])
+        self.assertEqual({c['id'] for c in data['concepts']},{c['id'] for c in asked['concepts']})
         # A card is about the whole term: one word of it (순서) does not bring in 서술 시간.
         with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('말차례 순서 정하기')) as r:data=json.load(r)
         self.assertEqual(data['concepts'],[])

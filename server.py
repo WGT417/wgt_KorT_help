@@ -253,7 +253,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1<=len(label)<=100:return self.send(400,{'error':'용어를 확인해 주세요.'})
                 from concepts import match_concepts
                 from term_index import card,note
-                terms=card(label);concepts=rank_concepts(card_concepts(label,match_concepts(label,'전체')),terms);written=note(label)
+                # rank_concepts는 여기서 부르지 않는다: 그 강등은 질문 경로의 판단이다.
+                # 카드에서는 색인 카드가 같은 화면 아래에 이미 있으므로, 별칭으로 맞았다고
+                # 개념 정리를 칩 뒤로 숨기면 손해만 난다 — 6,476장을 돌려 보니 508장이
+                # 그렇게 숨었고 그중 506장은 풀이도 없어 책 정의 한 줄만 남았다
+                # (간접인용 → 인용 표현 3,219자 + 안은문장 5,081자). 강등되던 550개 짝을
+                # 모두 읽어 잘못 붙은 것은 없었다.
+                terms=card(label);concepts=card_concepts(label,match_concepts(label,'전체'));written=note(label)
                 if not terms and not written and not any(c['match']=='exact' for c in concepts):return self.send(404,{'error':'이 용어의 카드를 찾지 못했습니다.'})
                 return self.send(200,{'label':label,'note':written,'concepts':concepts,'terms':terms})
             match=re.fullmatch(r'/api/ask/([A-Za-z0-9_-]{16,40})',path)
