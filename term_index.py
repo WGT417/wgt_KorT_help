@@ -257,12 +257,21 @@ def notes():
         if _notes['stamp']!=stamp:
             data=json.loads(NOTES.read_text(encoding='utf-8')) if NOTES.exists() else {}
             # Keyed by the label as the page shows it, so a note written before a
-            # label was fixed still finds its card (국힌 문체 → 국한문체).
-            _notes.update(stamp=stamp,model=data.get('model'),by_key={key_of(display_label(label)):n for label,n in data.get('notes',{}).items()})
+            # label was fixed still finds its card (국힌 문체 → 국한문체). The file's
+            # key and the note's own label can be spelled differently ('국힌문체' vs
+            # '국힌 문체'), and only the spaced one is corrected, so both are filed.
+            by_key={}
+            for label,n in data.get('notes',{}).items():
+                for name in (label,n.get('label') or label):
+                    by_key.setdefault(key_of(display_label(name)),n)
+            _notes.update(stamp=stamp,model=data.get('model'),by_key=by_key)
         return _notes['by_key']
 
 def note(label):
-    """A card's 풀이 with each citation resolved to the library page it quotes."""
+    """A card's 풀이 with each citation resolved to the library page it quotes.
+    The 풀이 keeps the index heading it was written from, which may be the
+    damaged one (송-구개음화, 변강죄전, ‘, 매체 언어’), so the card's own fixed
+    name is what the screen shows."""
     n=notes().get(key_of(label))
     if not n:return None
     cites=[]
@@ -271,7 +280,7 @@ def note(label):
             row=db.execute('SELECT p.id,p.printed_page,p.pdf_page,p.number_status,b.title FROM pages p JOIN books b ON b.id=p.book_id WHERE p.id=?',(c['page_id'],)).fetchone()
             if row:cites.append(dict(row)|{'book':row['title'],'quote':correct_display(c['quote'])[0]})
     if not cites:return None
-    return {k:n[k] for k in ('label','definition','explanation','examples','basis')}|{'citations':cites,'model':_notes['model']}
+    return {k:n[k] for k in ('label','definition','explanation','examples','basis')}|{'label':display_label(label),'citations':cites,'model':_notes['model']}
 _catalog={'stamp':None,'items':[],'keys':{}}
 # Fixing 6,600 labels takes most of a second, so the server builds the list once
 # at start (server.warm_catalog) and a request arriving meanwhile waits for that
@@ -302,12 +311,17 @@ def _build_catalog():
         if {s['book'] for s in e['sources']}<=from_headings or key_of(e['label']) in JUNK_KEYS:continue
         label=display_label(e['label'])
         groups.setdefault(key_of(label),[label,[]])[1].append(k)
-    items=[]
+    items=[];renamed={}
     for shown,(label,keys) in groups.items():
         sources=[s for k in keys for s in terms[k]['sources']]
         flags=(DEFINED if any(s.get('quote') for s in sources) else 0)|(CONCEPT if named&{shown,*keys} else 0)|(NOTE if shown in written else 0)
         # The 풀이 spells the term with its spaces put back (두 자리 서 술어 → 두 자리 서술어).
-        if shown in written and key_of(written[shown]['label'])==shown:label=display_label(written[shown]['label'])
+        # That rename can change the key the card is looked up by (국힌 문체 → 국한문체),
+        # and the group is still filed under the old one, so the card came back empty.
+        # Remember the new key too.
+        if shown in written and key_of(written[shown]['label'])==shown:
+            label=display_label(written[shown]['label'])
+            if key_of(label)!=shown:renamed.setdefault(key_of(label),keys or [shown])
         items.append([label,sum(AREA_BIT.get(c,0) for c in {s['category'] for s in sources}),len({s['book'] for s in sources}),flags])
     # A concept named by no index heading ("국어의 통시적 변화") is still a card.
     for c in concepts:
@@ -315,5 +329,7 @@ def _build_catalog():
         if k in groups:continue
         items.append([c['label'],AREA_BIT.get(c['area'],0),len({s.get('book') for s in c.get('sources',[]) if s.get('book')}),CONCEPT]);groups[k]=[c['label'],[]]
     items.sort(key=lambda i:sort_key(i[0]))
-    _catalog.update(stamp=stamp,items=items,keys={shown:keys for shown,(label,keys) in groups.items() if keys!=[shown]})
+    lookup={shown:keys for shown,(label,keys) in groups.items() if keys!=[shown]}
+    for k,v in renamed.items():lookup.setdefault(k,v)
+    _catalog.update(stamp=stamp,items=items,keys=lookup)
     return _catalog

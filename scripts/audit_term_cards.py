@@ -19,6 +19,9 @@ standing for a jamo, a stray digit, a Hangul syllable inside a Hanja gloss. It
 never counted the clause the spacing model ran together ("…은조음과정에서꽁기의"),
 which is why `page_spaces_restored` is reported beside it.
 
+5. Card sweep: every catalogue card through the /api/terms/card path — what it
+   shows (풀이 / 개념 정리 / 책 정의 / 쪽 버튼) and four defect classes.
+
 Result: data/term-card-audit.json. Precision of the definition rules was
 judged by reading samples; see README (찾아보기 용어 사전).
 
@@ -35,6 +38,57 @@ from text_pipeline import VERSION,note_marks,callout_marks,tidy_display,split_he
 from passage_text import noise,ocr_damage
 
 def key_of(term):return re.sub(r'[\s\-‘’\'"·]','',term).lower()
+
+def card_sweep():
+    """Every card of the catalogue through the path /api/terms/card takes, so the
+    count is what a reader actually sees. `related` entries are the chips; only
+    `exact` opens as 개념 정리.
+
+    Four defect classes are reported beside the tally:
+    - `empty`: nothing but page buttons, and not even a page — should be zero.
+    - `alias_only_unused`: an entry opened on the card through an alias although
+      its own text never uses the term. Each one is a link to read again.
+    - `damaged_definition`: the books' own definition the card shows still carries
+      glyph damage.
+    - `note_label_differs`: the 풀이 spells the term differently from the card.
+    """
+    from concepts import match_concepts,entry_text
+    from term_index import catalog,card,note,key_of
+    from server import card_concepts
+    tally=collections.Counter();defects=collections.defaultdict(list)
+    for label,areas,books,flags in catalog():
+        concepts=card_concepts(label,match_concepts(label,'전체'))
+        shown=[c for c in concepts if c['match']=='exact']
+        chips=[c for c in concepts if c['match']=='related']
+        terms=card(label);written=note(label)
+        quotes=[s for t in terms for s in t['sources'] if s['quote']]
+        pages=sum(len(t['sources']) for t in terms)
+        tally['카드']+=1
+        tally['풀이']+=bool(written)
+        tally['개념 정리(본문)']+=bool(shown)
+        tally['개념 정리(칩만)']+=bool(chips and not shown)
+        tally['책 정의']+=bool(quotes)
+        if written or shown:tally['설명 있는 카드']+=1
+        elif quotes:tally['책 정의만 있는 카드']+=1
+        elif pages:tally['쪽 버튼만 있는 카드']+=1
+        else:
+            tally['아무것도 없는 카드']+=1
+            defects['empty'].append(label)
+        k=key_of(label)
+        for c in shown:
+            if not c['by_label'] and k not in key_of(entry_text(c)):
+                defects['alias_only_unused'].append({'card':label,'entry':c['label']})
+        # Only the books' own sentence is checked. `noise` was written for passage
+        # text and fires on the year digits a 풀이 is full of ("1927년 창간된"),
+        # which made 26 of the first sweep's 42 hits false.
+        lead=quotes[0]['quote'] if quotes else ''
+        kinds=sorted(set(ocr_damage(lead)+(['noise'] if noise(lead) else []))) if lead else []
+        if kinds:
+            tally['책 정의 앞줄에 오인식 표지']+=1
+            defects['damaged_definition'].append({'card':label,'kinds':kinds,'text':lead[:140]})
+        if written and key_of(written['label'])!=k:
+            defects['note_label_differs'].append({'card':label,'note':written['label']})
+    return dict(tally),{k:v for k,v in defects.items()}
 
 def main():
     start=time.time();report={'generated':time.strftime('%Y-%m-%d %H:%M'),'text_version':VERSION}
@@ -82,9 +136,15 @@ def main():
                 spaces+=len(respace(text,gaps,glyph_gaps(r['raw'])[1],*guard))
             if r['kind']=='body' and split_heading(r['raw'],display)[0]:headings+=1
     report['display_cleanup']={'footnote_marks_dropped':dropped,'cross_reference_marks_dropped':callouts,'sentence_periods_restored':periods,'commas_restored':commas,'misread_terms_corrected':misread,'headings_set_apart':headings,'page_spaces_restored':spaces,'latin_words_rejoined':latin}
+    tally,defects=card_sweep()
+    report['cards']={'tally':tally,'defect_counts':{k:len(v) for k,v in defects.items()},
+        'empty':defects.get('empty',[])[:40],'alias_only_unused':defects.get('alias_only_unused',[])[:60],
+        'damaged_definition':defects.get('damaged_definition',[])[:60],'note_label_differs':defects.get('note_label_differs',[])[:40]}
     report['seconds']=round(time.time()-start)
     (core.DATA/'term-card-audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=1),encoding='utf-8')
     print(json.dumps({k:v for k,v in report.items() if k!='screen'},ensure_ascii=False,indent=1))
     print(json.dumps({k:v for k,v in report['screen'].items() if k!='examples'},ensure_ascii=False))
+    print(json.dumps(report['cards']['tally'],ensure_ascii=False,indent=1))
+    print('카드 결함:',json.dumps(report['cards']['defect_counts'],ensure_ascii=False))
 
 if __name__=='__main__':main()
