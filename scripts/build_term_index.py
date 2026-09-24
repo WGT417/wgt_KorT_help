@@ -291,7 +291,13 @@ def spacing(db,keys):
     # A term of three syllables or more that the books set solid throughout is
     # not disqualified by one spaced reading, which is as often the layout or
     # the scan as the book (체계문 21 to 1, 사용문 9 to 1).
-    return sorted(k for k in keys if joined[k]>=3 and (spaced[k]<=.03*(spaced[k]+joined[k]) or (len(k)>=3 and spaced[k]<=1 and joined[k]>=8)))
+    # A long term the books set solid every single time is taken on one reading:
+    # 간텍스트성 appears twice, both solid, and the 찾아보기 heading is solid too,
+    # so requiring three left it showing as ‘간 텍스트성’. Four syllables or more
+    # makes an accidental match unlikely, and a term is only ever rejoined where
+    # the source itself ran the glyphs together, so a spaced printing is untouched.
+    return sorted(k for k in keys if (joined[k]>=3 and (spaced[k]<=.03*(spaced[k]+joined[k]) or (len(k)>=3 and spaced[k]<=1 and joined[k]>=8)))
+                  or (len(k)>=4 and joined[k]>=1 and spaced[k]==0))
 
 def heading_terms(db,book_id,keyed,front=0):
     """(topic, pdf_page) for the section headings of a book with no index."""

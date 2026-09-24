@@ -240,7 +240,9 @@ class ReadingTextTests(unittest.TestCase):
         text,marks=tidy_display(raw,display,self.terms)
         self.assertEqual(marks,1)
         # The page printed "이르기도 한다"; the spacing model closed it and it is put back.
-        self.assertEqual(text,'각각 동격 절， 관계절로 줄여 이르기도 한다. (122)의 밑줄 부분')
+        # It also printed 동격절 as one word and the model split it, which round 11
+        # puts back too — the two-syllable term guard had left it as "동격 절".
+        self.assertEqual(text,'각각 동격절， 관계절로 줄여 이르기도 한다. (122)의 밑줄 부분')
     def test_heading_footnote_number_is_dropped(self):
         from text_pipeline import tidy_display
         text,marks=tidy_display('4.3.3.2. 관형사절을안은문장39\n절이 관형사화되어','4.3.3.2. 관형사절을 안은 문장 39 절이 관형사화되어',self.terms)
@@ -322,6 +324,22 @@ class ReadingTextTests(unittest.TestCase):
         self.assertEqual(respaced('하나의 소설이 다.','하나의 소설이다.'),'하나의 소설이다.')
         # A term the books write as one word is not torn apart again.
         self.assertEqual(respaced('부사격 조사로서','부사격조사로서'),'부사격조사로서')
+    def test_words_the_page_set_solid_are_put_back_together(self):
+        from text_pipeline import tidy_display,rejoin,glyph_gaps,solid_words
+        if not solid_words():self.skipTest('data/source-words.json not built')
+        # 한국어표준문법 646쪽: the page prints 각각 as one word, the spacing model split it.
+        self.assertEqual(tidy_display('각각 응결성과','각 각 응결성과',self.terms)[0],'각각 응결성과')
+        # 국어음운론 강의: 자음군, 단모음, 반모음 — the terms of the book, split by the model.
+        self.assertEqual(tidy_display('자음군 단순화는','자음 군 단순화는',self.terms)[0],'자음군 단순화는')
+        # A space the page did print is left alone: 할수 is printed as two words
+        # 2,051 times against 61, so it is not one of the solid forms.
+        self.assertEqual(tidy_display('할 수 있다','할 수 있다',self.terms)[0],'할 수 있다')
+        self.assertEqual(tidy_display('각 각의 뜻','각 각의 뜻',self.terms)[0],'각 각의 뜻')
+        # A phrase the scan glued out of three tokens is never seen spaced, so
+        # `solid` holds it; a particle inside the run keeps it from being rejoined.
+        text,gaps,_=glyph_gaps('로 끝나는 용언')
+        self.assertEqual(rejoin(text,gaps,glyph_gaps('로끝나는용언')[1]),set())
+
     def test_latin_words_split_by_a_stray_space_are_joined(self):
         from text_pipeline import join_latin,latin_words
         if not latin_words():self.skipTest('data/source-words.json not built')

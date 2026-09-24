@@ -156,6 +156,40 @@ def respace(text,gaps,raw_gaps,keys=(),longest=0):
         for p,term in term_starts(text,trial,raw_gaps,keys,longest):out-=set(range(p+1,p+len(term)))
     return out
 
+# The other direction. `respace` puts back a space the page printed and the model
+# deleted; here the model put a space *inside* a word the page set solid ("각 각",
+# "조음 체", "‘간 텍스트성’"). Only a run the source set solid end to end counts,
+# and the run must begin a word — that shape is what rejected 책임 이양 → 이양 and
+# 대한 연구 → 대한연구 when the gate was tried on the whole corpus.
+# `solid` is counted over adjacent token *pairs*, so a phrase the scan glued out
+# of three or more tokens is never seen spaced and slips in (로끝나는용언,
+# 잘보고물음에, 다음표를참조하기). A particle or connective ending *inside* the run
+# is where the page printed a space and the scan lost it, so such a run is left
+# as the model set it. The same syllable ending the run is fine (그것을, 명사구를).
+PARTICLE_END=set('로를을이가의는은에와과도만서라고며면나자야')
+def rejoin(text,gaps,raw_gaps):
+    """Glyph positions where the spacing model split a word the page printed as
+    one. The joined form must be in `solid_words()`, the list of forms the books
+    hardly ever print as two (각각 483:0), so a form they do space (할수 61:2,051)
+    is left as the model set it."""
+    known=solid_words()
+    if not known:return set()
+    out=set();i=0
+    while i<len(text):
+        # A run starts a word: the start of the text, whitespace the source
+        # printed, or a glyph that is not Hangul (‘간텍스트성’).
+        if '가'<=text[i]<='힣' and (i==0 or raw_gaps[i] or not '가'<=text[i-1]<='힣'):
+            j=i+1
+            while j<len(text) and '가'<=text[j]<='힣' and not raw_gaps[j]:j+=1
+            inner=[q for q in range(i+1,j) if gaps[q]]
+            if inner and text[i:j] in known and not any(text[q-1] in PARTICLE_END for q in inner):
+                out.update(inner)
+            # i=j, never i+1: a position inside a run the source set solid must
+            # not start a run of its own.
+            i=j
+        else:i+=1
+    return out
+
 _guard={}
 def respace_terms(keys,longest):
     """The term list that protects a join, cached: the index terms plus TERMS."""
@@ -196,6 +230,9 @@ def tidy_display(raw,display,terms=None,misread=None):
     # The page's own spaces first: a word the model ran together is not a word
     # the corrections below can recognise ("…에서꽁기의" only becomes 꽁기의 here).
     for q in respace(text,gaps,raw_gaps,*respace_terms(keys,longest)):gaps[q]=' '
+    # Then the other direction, before the misread pass: joining first lets a
+    # word-level correction reach the whole word ("변 회를" -> 변회를 -> 변화를).
+    for q in rejoin(text,gaps,raw_gaps):gaps[q]=''
     joined=set();done=0;fixed=0
     if misread:
         chars=list(text);sizes=sorted({len(k) for k in misread},reverse=True)

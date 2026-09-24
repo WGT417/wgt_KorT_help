@@ -21,6 +21,9 @@ which is why `page_spaces_restored` is reported beside it.
 
 5. Card sweep: every catalogue card through the /api/terms/card path — what it
    shows (풀이 / 개념 정리 / 책 정의 / 쪽 버튼) and four defect classes.
+6. Card spacing: every card definition against the glyphs of the page that
+   carries it, counting where the card is spaced and the page was not, and the
+   other way round.
 
 Result: data/term-card-audit.json. Precision of the definition rules was
 judged by reading samples; see README (찾아보기 용어 사전).
@@ -38,6 +41,50 @@ from text_pipeline import VERSION,note_marks,callout_marks,tidy_display,split_he
 from passage_text import noise,ocr_damage
 
 def key_of(term):return re.sub(r'[\s\-‘’\'"·]','',term).lower()
+
+def card_spacing(db):
+    """Every card definition against the glyphs of the page that carries it.
+
+    A card quote is cut from the reading text, so the two spacing rules must
+    already have run on it: `respace` puts back a space the page printed and the
+    model deleted, `rejoin` closes one the model put inside a word the page set
+    solid. Running both again over the stored quote must find nothing — anything
+    left means the index was built before the rule, or the rule cannot reach the
+    quote. Do not count raw-versus-card differences instead: the scan loses the
+    page's spaces constantly, so most of those are the model rightly re-spacing
+    glued text, not a defect.
+    """
+    from text_pipeline import respace,respace_terms,joined_terms,rejoin
+    terms=json.loads((core.DATA/'term-index.json').read_text(encoding='utf-8'))['terms']
+    keys,longest=respace_terms(*joined_terms())
+    pages={};out=collections.Counter();examples=collections.defaultdict(list)
+    for entry in terms.values():
+        for src in entry['sources']:
+            quote=src.get('quote')
+            if not quote:continue
+            out['정의']+=1
+            page=src['page_id']
+            if page not in pages:
+                rows=db.execute("SELECT raw FROM passages WHERE page_id=? AND kind IN ('body','note') AND version=? ORDER BY ordinal",(page,VERSION)).fetchall()
+                pages[page]=glyph_gaps('\n'.join(r['raw'] for r in rows))[:2]
+            raw_text,raw_gaps=pages[page]
+            text,gaps,_=glyph_gaps(quote)
+            at=raw_text.find(text)
+            if at<0:
+                # The reading text corrects misread terms, so the glyphs can differ.
+                out['쪽에서 원문을 찾지 못한 정의']+=1;continue
+            mine=raw_gaps[at:at+len(text)]
+            if mine:mine=['']+list(mine[1:])
+            spot=[k for k,ch in enumerate(quote) if not ch.isspace()]
+            around=lambda i:quote[spot[max(0,i-16)]:spot[min(len(spot)-1,i+16)]+1]
+            for i in respace(text,gaps,mine,keys,longest):
+                out['쪽이 찍은 공백이 아직 닫혀 있는 자리']+=1
+                if len(examples['respace'])<30:examples['respace'].append({'term':entry['label'],'around':around(i)})
+            for i in rejoin(text,gaps,mine):
+                out['책이 붙여 찍는 낱말이 아직 갈라져 있는 자리']+=1
+                if len(examples['rejoin'])<30:examples['rejoin'].append({'term':entry['label'],'around':around(i)})
+    return dict(out),{k:v for k,v in examples.items()}
+
 
 def card_sweep():
     """Every card of the catalogue through the path /api/terms/card takes, so the
@@ -140,11 +187,14 @@ def main():
     report['cards']={'tally':tally,'defect_counts':{k:len(v) for k,v in defects.items()},
         'empty':defects.get('empty',[])[:40],'alias_only_unused':defects.get('alias_only_unused',[])[:60],
         'damaged_definition':defects.get('damaged_definition',[])[:60],'note_label_differs':defects.get('note_label_differs',[])[:40]}
+    with core.connect() as db:spacing,spacing_examples=card_spacing(db)
+    report['card_spacing']={'counts':spacing,'examples':{k:v[:25] for k,v in spacing_examples.items()}}
     report['seconds']=round(time.time()-start)
     (core.DATA/'term-card-audit.json').write_text(json.dumps(report,ensure_ascii=False,indent=1),encoding='utf-8')
     print(json.dumps({k:v for k,v in report.items() if k!='screen'},ensure_ascii=False,indent=1))
     print(json.dumps({k:v for k,v in report['screen'].items() if k!='examples'},ensure_ascii=False))
     print(json.dumps(report['cards']['tally'],ensure_ascii=False,indent=1))
     print('카드 결함:',json.dumps(report['cards']['defect_counts'],ensure_ascii=False))
+    print('카드 띄어쓰기:',json.dumps(report['card_spacing']['counts'],ensure_ascii=False))
 
 if __name__=='__main__':main()
