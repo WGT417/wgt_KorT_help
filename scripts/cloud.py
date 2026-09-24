@@ -18,12 +18,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'deploy.json'
 # Never synced: SQLite side files, temporary extraction folders, audit screenshots,
-# unfinished downloads, and the full-precision BGE-M3 model (2.3GB) that only
-# builds the vector index; the server answers queries with the int8 model.
+# unfinished downloads, and all of models/ — search models are downloaded, not made
+# here, so each computer fetches its own with scripts/download_bge_m3.py and
+# scripts/download_local_search_model.py. Carrying 570MB+ between computers made the
+# transfer stall repeatedly, and a killed transfer discards the partial file.
+# The bucket keeps its own copy for the Cloud Build step; a dry-run on 2026-09-24
+# confirmed an excluded path is never listed for deletion at the destination.
 # gcloud applies re.match to the relative path (backslashes on Windows), so every
 # alternative may follow any leading folders. No leading ^: gcloud reads ^X^ at the
 # start of a list argument as a custom delimiter and splits the pattern.
-SYNC_EXCLUDE = r'(.*[/\\])?(tmp[^/\\]*([/\\].*)?|.*\.sqlite3-(wal|shm)|.*\.png|.*\.download|bge-m3[/\\]model\.onnx(_data)?)$'
+SYNC_EXCLUDE = r'(.*[/\\])?(tmp[^/\\]*([/\\].*)?|.*\.sqlite3-(wal|shm)|.*\.png|.*\.download|models([/\\].*)?)$'
 
 
 def load_config():

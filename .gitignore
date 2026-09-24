@@ -11,3 +11,4 @@ tmp/
 .env.tmp
 .firebase/
 kernel.errors.txt
+.claude/settings.local.json

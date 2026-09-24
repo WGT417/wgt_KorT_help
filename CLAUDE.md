@@ -76,6 +76,11 @@
 한글 출력에 필요한 `PYTHONIOENCODING=utf-8`과 `CLOUDSDK_PYTHON`은 `.claude/settings.json`에
 이미 들어 있다(다른 도구로 `subprocess`를 띄울 때는 직접 넘겨야 한다).
 
+**그 파일의 경로는 만든 컴퓨터(`C:/Users/user/…`)의 것이다.** 사용자 폴더 이름이 다른 컴퓨터에서는
+그 값이 없는 경로를 가리키므로, 그 컴퓨터의 `.claude/settings.local.json`(git 제외)에 자기 경로로
+`CLOUDSDK_PYTHON`과 `permissions.allow`를 다시 적는다. 개인 설정이 공용 설정을 덮으므로 이걸로
+충분하고, 공용 파일은 건드리지 않는다. 설정은 세션을 새로 열어야 반영된다.
+
 ```
 python scripts/check_concepts.py                          # 개념 항목 형식 검사 (몇 초)
 python scripts/audit_term_cards.py                        # 전수조사 (약 24분, data/term-card-audit.json)
@@ -93,6 +98,12 @@ python -m unittest tests.test_app tests.test_text_pipeline # 테스트 81개 (�
 `PublicModeTests`가 전부 429로 깨진다(앞 시험의 생성 스레드가 `AI_LOCK`을 쥔 채 남는다).
 클래스별로 격리하면 통과한다. 코드를 의심하기 전에 기계를 쉬게 하고 재실행한다.
 
+**검색 모델(`data/models/`)은 창고와 주고받지 않는다.** 남이 배포한 것을 받아온 파일이라 컴퓨터마다
+따로 받는 편이 낫다(합쳐 570MB가 넘어 전송이 자주 멎고, 끊기면 받던 조각이 버려진다). 그 폴더가
+빈 컴퓨터에서는 `python scripts/download_bge_m3.py`와
+`python scripts/download_local_search_model.py`를 한 번씩 돌린다. 창고의 사본은 그대로 남아
+Cloud Build가 쓰므로 배포에는 영향이 없다.
+
 ## 배포
 
 배포는 **사용자에게 물어보고** 한다.
@@ -100,6 +111,8 @@ python -m unittest tests.test_app tests.test_text_pipeline # 테스트 81개 (�
 - `concepts/*.json`이나 파이썬만 고쳤으면 **Cloud Run 배포 하나면 된다**(빌드 7~11분).
   `PATH`에 gcloud bin, `CLOUDSDK_PYTHON` 설정 후 `python scripts/cloud.py deploy`.
 - `data/`를 고쳤으면 **먼저** `python scripts/cloud.py push-data`(dry-run으로 비교부터).
+  **push-data는 창고를 이 컴퓨터와 똑같이 맞춘다** — 이쪽 `data/`가 낡았으면 저쪽에서 만든 것이
+  지워진다. 컴퓨터를 옮겨 다니며 작업한다면 **먼저 `pull-data`로 따라잡은 뒤에** 올린다.
 - `dist/`(화면)를 고쳤으면 `firebase deploy --only hosting`도.
 - 확인은 직접 `*.run.app`이 아니라 <https://kor-teacher-help.web.app/api/…>로 한다.
   이 노트북에서 run.app 직접 접속은 TLS가 끊긴다.
