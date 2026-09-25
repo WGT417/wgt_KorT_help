@@ -311,8 +311,12 @@ def card(label):
     sources=[dict(s,term=e['label']) for g,e in found for s in e['sources']]
     entry=_entry(found);written=notes().get(k)
     # 풀이에 적힌 이름은 그 용어 하나짜리 카드에서만 쓴다: 두 이름이 한 카드로
-    # 묶인 곳(관형절 · 관형사절)에서 풀이 이름을 쓰면 다른 이름이 지워진다.
-    if written and key_of(written['label'])==k and len(found)<2:entry['label']=written['label']
+    # 묶인 곳(관형절 · 관형사절)에서 풀이 이름을 쓰면 다른 이름이 지워진다. 풀이 이름이
+    # 나은 자리가 887곳이다(찾아보기 ‘간접인용’ : 풀이 ‘간접 인용’). 다만 LABEL_FIXES로
+    # 손수 고친 이름은 풀이 이름을 앞선다 — 그러지 않으면 목록에서는 고쳐진 이름이
+    # 보이는데 카드를 열면 제목만 옛 이름으로 되돌아간다(‘았/었’ ← ‘-았/었-’ 16곳).
+    if written and key_of(written['label'])==k and len(found)<2 and not any(e['label'] in LABEL_FIXES for g,e in found):
+        entry['label']=display_label(written['label'])
     return _cards([(len(k),0,k,entry,sources)])
 
 def _cards(hits):
