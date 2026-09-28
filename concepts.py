@@ -94,7 +94,7 @@ def match_concepts(query,category='전체',limit=3):
     exact_terms=[t for kind,_,e in hits if kind=='exact' for t in e['_terms'] if t in qterms or t==q]
     longest=max(exact_terms,key=len,default='')
     hits=[('related' if kind=='exact' and all(t!=longest and t in longest for t in e['_terms'] if t in qterms or t==q) and longest else kind,n,e) for kind,n,e in hits]
-    hits.sort(key=lambda h:(h[0]!='exact',-h[1],h[2]['id']))
+    hits.sort(key=lambda h:(h[0]!='exact',-h[1])+tie_break(h[2],qterms,q)+(h[2]['id'],))
     seen=set();result=[]
     for kind,_,entry in hits:
         if entry['id'] in seen:continue
@@ -106,6 +106,26 @@ def match_concepts(query,category='전체',limit=3):
         result.append(item)
         if len(result)>=limit:break
     return result
+
+# A question about the language's past says so; without these words a grammar term
+# is asked about today's Korean, as explanation.prompt_for also assumes.
+HISTORY_ASKED=re.compile(r'중세|근대|고대|국어사|옛|통시|훈민정음')
+
+def tie_break(entry,qterms,q):
+    """Among entries the question names equally well, the one about the term goes
+    first: its label is the term, then its label holds it, then — unless the
+    question asks about the past — an entry of 국어사 goes after the others, then
+    its text uses the term more. The id used to decide, so 불규칙 활용 opened on
+    중세 국어 형태와 조사 (language-history/… sorts before parts-of-speech/…),
+    which uses the term once, ahead of 활용과 어미, which uses it six times — 37 of
+    the 88 names two entries share were ordered that way. Counting alone put
+    중세 국어 문법 요소 (6) ahead of 시제와 동작상 (5) for -더-."""
+    names=[t for t in entry['_terms'] if t in qterms or t==q] or [t for t in entry['_terms'] if t in q]
+    term=max(names,key=len,default='')
+    label=compact(entry.get('label',''))
+    named=0 if term==re.sub(r'\(.*?\)','',label) else 1 if term in label else 2
+    past=entry.get('parent')=='국어사' and not HISTORY_ASKED.search(q)
+    return (named,past,-compact(entry_text(entry)).count(term))
 
 def public(entry):
     out={k:v for k,v in entry.items() if not k.startswith('_')}

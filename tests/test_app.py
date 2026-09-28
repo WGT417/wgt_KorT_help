@@ -214,6 +214,18 @@ class ConceptPrecisionTests(unittest.TestCase):
         # The entry's own name in the question is an exact match.
         self.assertEqual(match_concepts('체언의 종류','문법')[0]['match'],'exact')
         self.assertEqual(match_concepts('체언의 종류','문법')[0]['id'],'parts-of-speech/nominals')
+    def test_equal_matches_put_the_entry_about_the_term_first(self):
+        # Both entries carry the alias; the id used to put 중세 국어 형태와 조사 first.
+        from concepts import match_concepts
+        first=lambda q:match_concepts(q,'전체')[0]['label']
+        self.assertEqual(first('불규칙 활용'),'활용과 어미')
+        self.assertEqual(first('보조사'),'조사')
+        self.assertEqual(first('경음화'),'된소리되기')
+        self.assertEqual(first('토론'),'토의와 토론')  # its label holds the term
+        # A 국어사 entry waits unless the question asks about the past.
+        self.assertEqual(first('-더-'),'시제와 동작상')
+        self.assertEqual(first('자모'),'음운과 문자의 대응')
+        self.assertEqual(first('훈민정음의 자모'),'훈민정음 제자 원리')
     def test_latin_extended_letters_are_ocr_noise(self):
         from passage_text import noise
         self.assertGreater(noise('재귀칭을 사용하나 Ð"표준국어대사전』에서는 재귀 대명사만을 표제어로 삼는다.'),0)
