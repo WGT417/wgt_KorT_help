@@ -155,6 +155,23 @@ def card_concepts(label,concepts):
         kept.append(c)
     return kept
 
+def term_card(label):
+    """One card from the term list: the term exactly, from every area, with the
+    concept entries that name it — the same card a question naming it gets.
+    None when there is nothing to show. scripts/build_term_cards.py writes every
+    card of the list ahead of time with this same function."""
+    from concepts import match_concepts
+    from term_index import card,note
+    # rank_concepts는 여기서 부르지 않는다: 그 강등은 질문 경로의 판단이다.
+    # 카드에서는 색인 카드가 같은 화면 아래에 이미 있으므로, 별칭으로 맞았다고
+    # 개념 정리를 칩 뒤로 숨기면 손해만 난다 — 6,476장을 돌려 보니 508장이
+    # 그렇게 숨었고 그중 506장은 풀이도 없어 책 정의 한 줄만 남았다
+    # (간접인용 → 인용 표현 3,219자 + 안은문장 5,081자). 강등되던 550개 짝을
+    # 모두 읽어 잘못 붙은 것은 없었다.
+    terms=card(label);concepts=card_concepts(label,match_concepts(label,'전체'));written=note(label)
+    if not terms and not written and not any(c['match']=='exact' for c in concepts):return None
+    return {'label':label,'note':written,'concepts':concepts,'terms':terms}
+
 _catalog_body={'items':None,'plain':b'','gzip':b''}
 def catalog_body():
     """The term list as sent: 6,500 entries are 170KB of JSON but 47KB gzipped."""
@@ -247,21 +264,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Length',str(len(data)))
                 self.headers_safe();self.end_headers();self.wfile.write(data);return
             if path=='/api/terms/card':
-                # One card from the term list: the term exactly, from every area, with the
-                # concept entries that name it — the same card a question naming it gets.
                 label=parse_qs(urlsplit(self.path).query).get('q',[''])[0].strip()
                 if not 1<=len(label)<=100:return self.send(400,{'error':'용어를 확인해 주세요.'})
-                from concepts import match_concepts
-                from term_index import card,note
-                # rank_concepts는 여기서 부르지 않는다: 그 강등은 질문 경로의 판단이다.
-                # 카드에서는 색인 카드가 같은 화면 아래에 이미 있으므로, 별칭으로 맞았다고
-                # 개념 정리를 칩 뒤로 숨기면 손해만 난다 — 6,476장을 돌려 보니 508장이
-                # 그렇게 숨었고 그중 506장은 풀이도 없어 책 정의 한 줄만 남았다
-                # (간접인용 → 인용 표현 3,219자 + 안은문장 5,081자). 강등되던 550개 짝을
-                # 모두 읽어 잘못 붙은 것은 없었다.
-                terms=card(label);concepts=card_concepts(label,match_concepts(label,'전체'));written=note(label)
-                if not terms and not written and not any(c['match']=='exact' for c in concepts):return self.send(404,{'error':'이 용어의 카드를 찾지 못했습니다.'})
-                return self.send(200,{'label':label,'note':written,'concepts':concepts,'terms':terms})
+                result=term_card(label)
+                if result is None:return self.send(404,{'error':'이 용어의 카드를 찾지 못했습니다.'})
+                return self.send(200,result)
             match=re.fullmatch(r'/api/ask/([A-Za-z0-9_-]{16,40})',path)
             if match:
                 job=AI_JOBS.get(match[1])

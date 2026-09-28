@@ -84,7 +84,8 @@
 ```
 python scripts/check_concepts.py                          # 개념 항목 형식 검사 (몇 초)
 python scripts/audit_term_cards.py                        # 전수조사 (약 24분, data/term-card-audit.json)
-python -m unittest tests.test_app tests.test_text_pipeline # 테스트 81개 (한가할 때 약 90초)
+python -m unittest tests.test_app tests.test_text_pipeline # 테스트 83개 (한가할 때 약 90초, 바쁘면 4분)
+python scripts/build_term_cards.py                        # 용어 목록·카드 6,469장을 dist/terms/에 (약 2분)
 ```
 
 근거를 찾을 때: `term_index._found(key_of(용어))`로 그 용어의 쪽을, `data/library.sqlite3`의
@@ -108,11 +109,16 @@ Cloud Build가 쓰므로 배포에는 영향이 없다.
 
 배포는 **사용자에게 물어보고** 한다.
 
-- `concepts/*.json`이나 파이썬만 고쳤으면 **Cloud Run 배포 하나면 된다**(빌드 7~11분).
-  `PATH`에 gcloud bin, `CLOUDSDK_PYTHON` 설정 후 `python scripts/cloud.py deploy`.
+- `concepts/*.json`이나 파이썬만 고쳤으면 **`python scripts/cloud.py deploy` 하나면 된다**(빌드 7~11분).
+  `PATH`에 gcloud bin, `CLOUDSDK_PYTHON` 설정 후 실행한다. Cloud Run 배포가 끝나면 **용어 카드를 다시 써서
+  Hosting까지 올린다**(`hosting` 단계, 약 3분). 공개 사이트의 카드 목록과 카드는 Cloud Run이 아니라
+  Hosting의 정적 파일(`dist/terms/`, git 제외)이다. Cloud Run은 쉬면 꺼져서, 깨어나는 동안 목록이
+  5~16초, 첫 카드가 4~10초 걸렸다. 그래서 개념 항목·풀이·색인·도서관이 바뀌면 이 단계를 거쳐야 화면에 반영된다.
 - `data/`를 고쳤으면 **먼저** `python scripts/cloud.py push-data`(dry-run으로 비교부터).
   **push-data는 창고를 이 컴퓨터와 똑같이 맞춘다** — 이쪽 `data/`가 낡았으면 저쪽에서 만든 것이
   지워진다. 컴퓨터를 옮겨 다니며 작업한다면 **먼저 `pull-data`로 따라잡은 뒤에** 올린다.
-- `dist/`(화면)를 고쳤으면 `firebase deploy --only hosting`도.
+- `dist/`(화면)만 고쳤으면 `python scripts/cloud.py hosting`(카드를 다시 쓴 뒤 `firebase deploy --only hosting`).
+  `firebase deploy`를 직접 부르면 `dist/terms/`가 낡았거나 없는 채로 올라간다. 카드 파일이 없으면 화면이
+  서버에 물어 보긴 하지만 다시 느려진다. 카드를 쓰려면 이 컴퓨터에 `data/`가 있어야 한다.
 - 확인은 직접 `*.run.app`이 아니라 <https://kor-teacher-help.web.app/api/…>로 한다.
   이 노트북에서 run.app 직접 접속은 TLS가 끊긴다.

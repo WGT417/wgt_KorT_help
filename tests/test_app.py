@@ -173,6 +173,17 @@ class HTTPTests(unittest.TestCase):
         for q in ['','zxqv%20%EC%97%86%EB%8A%94%20%EC%9A%A9%EC%96%B4']:
             with self.assertRaises(HTTPError) as e:self.request('/api/terms/card?q='+q)
             self.assertIn(e.exception.code,(400,404))
+    def test_prebuilt_cards_are_the_server_cards(self):
+        # Hosting serves the cards scripts/build_term_cards.py writes with server.term_card,
+        # under the name dist/app.js termFile computes. Node gave 5d9fd3256ffe660c for 관형절 too.
+        import sys;sys.path.insert(0,str(core.ROOT/'scripts'))
+        from build_term_cards import file_name,dump
+        self.assertEqual(file_name('관형절'),'5d9fd3256ffe660c')
+        with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('관형절')) as r:served=json.load(r)
+        self.assertEqual(served,json.loads(dump(server.term_card('관형절'))))
+        # The local app never serves them, so a concept just edited shows at once.
+        with self.assertRaises(HTTPError) as e:self.request('/terms/index.json')
+        self.assertEqual(e.exception.code,404)
 
 if __name__=='__main__':unittest.main(verbosity=2)
 

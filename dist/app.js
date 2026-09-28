@@ -329,9 +329,22 @@ function initialOf(label){
     const jamo=CHO.indexOf(ch);if(jamo>=0)return PLAIN_CHO[jamo];
     return /[A-Za-z]/.test(ch)?'A–Z':'기타';
 }
+// The list and every card written ahead of time (scripts/build_term_cards.py) and served by
+// Hosting, so opening them never waits for the server to wake. The local app does not serve
+// them — a concept just edited must show at once — and then the server is asked, as before.
+async function prebuilt(path){try{const r=await fetch(path);return r.ok?await r.json():null;}catch{return null;}}
+// Same name as build_term_cards.file_name: the first 16 hex digits of SHA-1 over the label.
+async function termFile(label){const hash=await crypto.subtle.digest('SHA-1',new TextEncoder().encode(label));return [...new Uint8Array(hash,0,8)].map(b=>b.toString(16).padStart(2,'0')).join('');}
+const termCards=new Map();
+function fetchTermCard(label){
+    if(!termCards.has(label))termCards.set(label,termFile(label).then(file=>prebuilt(`/terms/c/${file}.json`),()=>null)
+        .then(data=>data||api('/api/terms/card?q='+encodeURIComponent(label)))
+        .catch(error=>{termCards.delete(label);throw error;}));
+    return termCards.get(label);
+}
 function loadTerms(){
     if(termsState.items)return Promise.resolve(termsState.items);
-    termsState.loading??=api('/api/terms').then(data=>{
+    termsState.loading??=prebuilt('/terms/index.json').then(data=>data||api('/api/terms')).then(data=>{
         termsState.items=data.items.map(([label,areas,books,flags])=>({label,areas,books,flags,compact:termKey(label),initial:initialOf(label)}));
         return termsState.items;
     }).finally(()=>{termsState.loading=null;});
@@ -348,6 +361,9 @@ function termTile(t){
     if(t.flags&1)tags.append(el('span','정의','term-tag'));
     if(t.flags&2)tags.append(el('span','개념 정리','term-tag concept'));
     if(tags.childNodes.length)tile.append(tags);
+    // Asked for as the pointer rests or presses on a tile, the card is usually in by the click.
+    const prefetch=()=>fetchTermCard(t.label).catch(()=>{});let resting;
+    tile.onpointerenter=()=>{resting=setTimeout(prefetch,120);};tile.onpointerleave=()=>clearTimeout(resting);tile.onpointerdown=prefetch;
     tile.onclick=()=>openTermCard(t);return tile;
 }
 function renderTermsView(){
@@ -386,7 +402,7 @@ async function openTermCard(t){
     $('#term-dialog-search').onclick=()=>{dialog.close();searchTerm(t.label);};
     if(!dialog.open)dialog.showModal();
     try{
-        const data=await api('/api/terms/card?q='+encodeURIComponent(t.label));
+        const data=await fetchTermCard(t.label);
         if(seq!==termCardSeq)return;
         const concepts=el('div'),terms=el('div');
         renderConcepts(data.concepts,concepts,'이 용어만 다룬 정리는 아직 없습니다. 관련 개념 정리 보기: ');renderTerms(data.terms,terms);

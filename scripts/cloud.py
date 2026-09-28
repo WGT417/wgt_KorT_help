@@ -3,8 +3,10 @@
     python scripts/cloud.py setup                 # once per project: APIs, bucket, image repository
     python scripts/cloud.py push-data             # upload data/ (this computer -> bucket)
     python scripts/cloud.py pull-data             # download data/ (bucket -> this computer)
-    python scripts/cloud.py deploy [--openai-key K] [--admin-token T]
-                                                  # build in Cloud Build (data fetched from the bucket) and deploy to Cloud Run
+    python scripts/cloud.py deploy [--openai-key K] [--admin-token T] [--no-hosting]
+                                                  # build in Cloud Build (data fetched from the bucket) and deploy to Cloud Run,
+                                                  # then `hosting` so the term cards match what was deployed
+    python scripts/cloud.py hosting               # write the term cards (build_term_cards.py) and deploy dist/ to Firebase Hosting
     python scripts/cloud.py url                   # print the Cloud Run URL
 
 Settings live in deploy.json (project, region, service, bucket). Requires the
@@ -111,6 +113,32 @@ def deploy(config, openai_key, admin_token):
     print('\n배포 주소:', url(config))
 
 
+def firebase():
+    exe = shutil.which('firebase') or shutil.which('firebase.cmd')
+    npm = Path(os.environ.get('APPDATA', '')) / 'npm' / 'firebase.cmd'
+    if not exe and npm.exists():
+        exe = str(npm)
+    if not exe:
+        sys.exit('firebase CLI를 찾을 수 없습니다. `npm install -g firebase-tools` 후 `firebase login`을 실행하세요.')
+    return exe
+
+
+def hosting(config):
+    """The term list and cards are static files on Hosting (scripts/build_term_cards.py),
+    so they are written from this computer's data/ and concepts/ just before upload.
+    Without data/ they cannot be written, and uploading dist/ without them would
+    drop the cards Hosting has, so stop instead."""
+    if not (ROOT / 'data' / 'library.sqlite3').exists():
+        sys.exit('data/library.sqlite3가 없어 용어 카드를 만들 수 없습니다. `python scripts/cloud.py pull-data` 후 `python scripts/cloud.py hosting`을 실행하세요.')
+    print('$ python scripts/build_term_cards.py', flush=True)
+    if subprocess.run([sys.executable, str(ROOT / 'scripts' / 'build_term_cards.py')], cwd=ROOT,
+                      env={**os.environ, 'PYTHONIOENCODING': 'utf-8'}).returncode:
+        sys.exit('용어 카드를 만들지 못해 Hosting 배포를 멈췄습니다.')
+    print('$ firebase deploy --only hosting', flush=True)
+    if subprocess.run([firebase(), 'deploy', '--only', 'hosting', '--project', config['project']], cwd=ROOT).returncode:
+        sys.exit('Hosting 배포에 실패했습니다.')
+
+
 def url(config):
     return run('run', 'services', 'describe', config['service'], '--region', config['region'],
                '--project', config['project'], '--format', 'value(status.url)', capture=True)
@@ -119,17 +147,21 @@ def url(config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('setup', 'push-data', 'pull-data', 'url'):
+    for name in ('setup', 'push-data', 'pull-data', 'hosting', 'url'):
         sub.add_parser(name)
     d = sub.add_parser('deploy')
     d.add_argument('--openai-key', default='')
     d.add_argument('--admin-token', default='')
+    d.add_argument('--no-hosting', action='store_true', help='Cloud Run만 배포하고 용어 카드·화면(Hosting)은 두기')
     args = parser.parse_args()
     config = load_config()
     if args.command == 'setup': setup(config)
     elif args.command == 'push-data': sync(config, 'push')
     elif args.command == 'pull-data': sync(config, 'pull')
-    elif args.command == 'deploy': deploy(config, args.openai_key, args.admin_token)
+    elif args.command == 'deploy':
+        deploy(config, args.openai_key, args.admin_token)
+        if not args.no_hosting: hosting(config)
+    elif args.command == 'hosting': hosting(config)
     elif args.command == 'url': print(url(config))
 
 

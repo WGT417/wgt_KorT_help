@@ -7,6 +7,7 @@ __pycache__/
 *.log
 개론서 파일/
 tmp/
+dist/terms/
 
 .env.tmp
 .firebase/
