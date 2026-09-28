@@ -347,7 +347,8 @@ class PublicModeTests(unittest.TestCase):
         results=[self.ask(Cookie=f'__session=visitor{n}') for n in range(4)]
         self.assertEqual([d['ai_used'] for d in results],[True,True,True,False])
         self.assertEqual([d['quota']['remaining'] for d in results],[2,1,0,0])
-        self.assertIn('3회',results[3]['notice']);self.assertGreater(len(results[3]['sources']),0)
+        # The page shows only a 해설, so a spent day answers at once with the notice and no search.
+        self.assertIn('3회',results[3]['notice']);self.assertIn('내일',results[3]['notice']);self.assertEqual(results[3]['sources'],[])
     def test_admin_token_bypasses_quota(self):
         for _ in range(4):data=self.ask(**{'X-Admin-Token':'test-admin-token'})
         self.assertTrue(data['ai_used']);self.assertEqual(data['quota'],{'admin':True})

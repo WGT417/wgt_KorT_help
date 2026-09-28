@@ -7,7 +7,7 @@ fieldset label{font-size:13px;min-height:44px}.category-sub,.category-descriptio
 .cross-book-note{font-size:13px;color:var(--muted);align-self:center}.question-options{align-items:center}
 .comparison-section{margin-top:26px}.comparison-section>h3{margin-bottom:12px}.table-scroll{overflow:auto;background:white;border:1px solid var(--line);border-radius:10px}.table-scroll:focus-visible{outline:3px solid var(--blue-dark);outline-offset:3px}
 table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-height:1.85}caption{text-align:left;padding:15px 18px;font-size:13px;color:var(--muted);background:#fff}th,td{text-align:left;vertical-align:top;padding:16px;border-top:1px solid var(--line)}thead th{background:#eaf2fc;font-weight:700;color:var(--blue-dark)}tbody th{width:21%;font-weight:600}td:last-child{min-width:175px}.table-excerpt{white-space:pre-line;max-height:245px;overflow:auto}.reference-button{color:var(--blue-dark);font-size:12px;padding:7px 10px;text-align:left;min-height:44px;white-space:normal}.citation-text{white-space:pre-wrap;max-height:56vh;overflow:auto;font:15px/1.9 "Malgun Gothic",sans-serif;background:#f5f8fc;padding:18px;border-radius:9px}.source-card blockquote{max-height:230px}.question-options .select-wrap select{min-width:130px}
-@media(max-width:1150px){.form-bottom{flex-wrap:wrap}.form-bottom fieldset{gap:12px}.cross-book-note{font-size:12px}}@media(max-width:560px){.cross-book-note{width:100%}.question-options .select-wrap{flex:initial;width:100%}.select-wrap{flex-direction:row;align-items:center}.question-options .select-wrap select{flex:1}fieldset{gap:4px!important}fieldset label{font-size:12px}.help{font-size:12px}.suggestions button{font-size:12px}.category-description{font-size:12px}.side-bottom{font-size:12px}.reference-button{font-size:12px}.table-scroll{margin:0 -1px}h2{font-size:18px}.source-meta .page-label{font-size:13px}}
+@media(max-width:1150px){.form-bottom{flex-wrap:wrap}.cross-book-note{font-size:12px}}@media(max-width:560px){.cross-book-note{width:100%}.question-options .select-wrap{flex:initial;width:100%}.select-wrap{flex-direction:row;align-items:center}.question-options .select-wrap select{flex:1}fieldset{gap:4px!important}fieldset label{font-size:12px}.help{font-size:12px}.suggestions button{font-size:12px}.category-description{font-size:12px}.side-bottom{font-size:12px}.reference-button{font-size:12px}.table-scroll{margin:0 -1px}h2{font-size:18px}.source-meta .page-label{font-size:13px}}
 
 .title-credit{display:inline-block;color:var(--blue-dark);font-size:.55em;font-weight:600;letter-spacing:-.2px;white-space:nowrap}
 .reading-passage,.explanation,.source-full-text,.selected-quote{word-break:keep-all;overflow-wrap:anywhere}
@@ -48,7 +48,7 @@ table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-he
 #source-details{border-top:1px solid var(--line);margin-top:28px;padding-top:18px}#source-details>summary{cursor:pointer;font-size:16px;font-weight:600;padding:10px 0;min-height:44px}#source-count{margin-left:10px}.citation-text{white-space:normal;line-height:1.9}.selected-quote{margin:12px 0 22px;border-left:3px solid #4c7dc4;padding:12px 16px;background:#eaf2fc}.source-full-text{white-space:normal}.citation-text summary{cursor:pointer;min-height:44px}.citation-text h3{font-size:16px}
 @media(max-width:600px){.explanation{font-size:15px;line-height:1.85;padding:20px 16px 22px;border-radius:12px}.explanation-title{font-size:20px;padding-bottom:14px}.explanation h4{font-size:18px;gap:10px}.section-num{min-width:27px;height:27px;font-size:14px}.explanation h5{font-size:16px}.explanation-subsection{padding-left:12px}.explanation-point{padding-left:26px}.point-label{font-size:15.5px}.point-num{font-size:16px}.example-list{font-size:14.5px}.point-examples{padding:9px 11px}.explanation-toc ol{grid-template-columns:1fr}.citation-chip{min-height:32px;font-size:11px}.concept-table{min-width:700px}}
 
-.escalate{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:14px 0 4px}.escalate:empty{display:none}.escalate .primary{min-height:44px;padding:9px 18px}
+.form-bottom{justify-content:flex-end}
 .source-table{margin:6px 0 16px;padding:14px 16px;background:#f5f8fc;border-radius:9px;max-width:900px}
 .source-table-caption{font-size:12px;color:var(--muted);margin:0 0 8px;font-weight:600}
 .source-table ul{margin:0;padding-left:18px;line-height:1.85;font-size:14.5px;word-break:keep-all}
@@ -99,6 +99,8 @@ table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-he
 .terms-strip strong{display:block;font-size:13px}
 .terms-strip small{display:block;font-size:11px;color:var(--muted);margin-top:3px;font-weight:400}
 .terms-strip-arrow{margin-left:auto;color:var(--blue);font-size:18px}
+/* Above the question box: a plain lookup belongs to the cards, the question box writes an AI 해설. */
+.terms-guide{margin:0 0 14px;background:var(--blue-light);border-color:#c9dcf2}
 .terms-head{margin-bottom:22px}
 .terms-head .eyebrow{margin-bottom:11px}
 .terms-controls{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px}

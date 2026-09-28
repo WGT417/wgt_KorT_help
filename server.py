@@ -70,7 +70,7 @@ def openai_call(prompt,key,*,schema=None,max_tokens=16000):
         if result.get('status')!='completed':raise ValueError('incomplete response')
         raw=''.join(part['text'] for item in result['output'] if item.get('type')=='message' for part in item.get('content',[]) if part.get('type')=='output_text')
         return json.loads(raw)
-    except (KeyError,IndexError,ValueError,TypeError,AttributeError):raise ValueError('OpenAI 해설을 완성하지 못했거나 응답 형식이 올바르지 않습니다. 원문 검색 결과를 확인해 주세요.') from None
+    except (KeyError,IndexError,ValueError,TypeError,AttributeError):raise ValueError('OpenAI 해설을 완성하지 못했거나 응답 형식이 올바르지 않습니다. 잠시 후 다시 시도해 주세요.') from None
 
 def reason(query,sources):
     packet,registry=evidence_packet(sources)
@@ -89,6 +89,11 @@ def refund_quota(admin):
     if admin or QUOTA is None:return
     try:QUOTA.refund(quota.today())
     except Exception as error:print(f'quota refund error: {error}',flush=True)
+
+def spent_notice():
+    return f"오늘 서재 전체에 열어 둔 AI 해설 {quota.LIMIT}회를 모두 사용했습니다. 한국 시각 자정에 다시 채워지니 내일 다시 이용해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다."
+PAUSED='지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 중단했습니다. 잠시 후 다시 시도해 주세요.'
+NO_KEY='AI 해설을 쓰려면 OpenAI API 키를 연결해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다.'
 
 def strip_sources(result):
     for source in result['sources']:
@@ -301,21 +306,26 @@ class Handler(BaseHTTPRequestHandler):
                 query=body.get('question','');category=body.get('category','문식성');mode=body.get('mode','search');bid=''
                 if not isinstance(query,str) or not 2<=len(query.strip())<=1000:return self.send(400,{'error':'질문을 2~1,000자로 입력해 주세요.'})
                 if category not in {'전체','문식성','문법','문학'} or mode not in {'search','reason'}:return self.send(400,{'error':'검색 조건을 확인해 주세요.'})
-                use_ai,why=route_question(mode);sources=search_pages(query,category,bid)
+                use_ai,why=route_question(mode)
+                if use_ai:
+                    # The page shows only a 해설 now, so when none can be written there is nothing to
+                    # search for: the visitor reads why at once instead of after a search.
+                    state=self.quota_state() if API_KEY else None
+                    closed=NO_KEY if not API_KEY else PAUSED if state.get('unavailable') else spent_notice() if state.get('remaining')==0 else None
+                    if closed:return self.send(200,{'question':query,'route':'reason','route_reason':why,'sources':[],'answer':None,'ai_used':False,'notice':closed,'concepts':[],'terms':[],'quota':state})
+                    if AI_LOCK.locked():return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
+                sources=search_pages(query,category,bid)
                 from concepts import match_concepts
                 from term_index import match_terms
                 terms=match_terms(query,category);concepts=rank_concepts(match_concepts(query,category),terms)
                 result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms,'quota':None}
                 if not sources:result['notice']='관련 근거를 찾지 못했습니다. 용어를 짧게 바꾸거나 검색 영역을 넓혀 주세요.'
-                elif use_ai and not API_KEY:result['notice']='해설이 필요한 질문입니다. OpenAI API 키를 연결하면 근거를 바탕으로 설명합니다. 지금은 찾은 원문을 보여드립니다.'
                 elif use_ai:
                     if not AI_LOCK.acquire(blocking=False):return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
                     job_id=None
                     try:
                         allowed,state=self.quota_state(consume=True);result['quota']=state
-                        if not allowed:
-                            result['notice']=('지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 중단했습니다. 원문 검색과 개념 정리는 계속 이용할 수 있습니다.' if state.get('unavailable')
-                                else f"오늘 서재 전체에 열어 둔 AI 해설 {quota.LIMIT}회를 모두 사용했습니다. 한국 시각 자정에 다시 채워지며, 원문 검색과 개념 정리는 계속 볼 수 있습니다.")
+                        if not allowed:result['notice']=PAUSED if state.get('unavailable') else spent_notice()
                         else:job_id=start_job(result,query,category,state,self.is_admin(),body.get('job'))
                     finally:
                         if job_id is None:AI_LOCK.release()  # otherwise the job's thread releases it
@@ -347,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404,{'error':'찾을 수 없습니다.'})
         except ValueError as e:return self.send(400,{'error':'입력값 또는 OCR 환경을 확인해 주세요.'})
         except (BrokenPipeError,ConnectionResetError):pass
-        except Exception:return self.send(500,{'error':'처리하지 못했습니다. 원문 검색은 계속 사용할 수 있습니다.'})
+        except Exception:return self.send(500,{'error':'처리하지 못했습니다. 잠시 후 다시 시도해 주세요.'})
 
 def semantic_ready():
     try:
