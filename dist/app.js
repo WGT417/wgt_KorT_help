@@ -4,19 +4,27 @@ let statusData=null,csrf='',installPrompt=null;
 const number=n=>Number(n||0).toLocaleString('ko-KR');
 function el(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function notice(text,isError=false){const target=$('#feedback');target.replaceChildren();if(text)target.append(el('p',text,'notice'+(isError?' error':'')));}
-let adminToken='';try{adminToken=localStorage.getItem('adminToken')||'';}catch{}
 // 구글 로그인(Firebase): 공개 서재에서 쪽 전문은 관리자와, 관리자가 허용한 계정에만 보인다.
-// SDK는 로그인 버튼을 누르거나 이 브라우저에서 로그인한 적이 있을 때만 불러온다.
+// 공용 컴퓨터에서 다음 사람이 이어 쓰지 않도록, 로그인은 이 탭에만 두어(browserSessionPersistence)
+// 새로고침은 견디되 브라우저나 탭을 닫으면 사라지고, 30분 동안 손대지 않아도 풀린다.
+// SDK는 로그인 단추가 보이거나 이 탭에서 로그인했을 때만 불러온다.
 const FIREBASE='https://www.gstatic.com/firebasejs/12.19.0/';
 let auth=null,authLoading=null;
-function wasSignedIn(){try{return localStorage.getItem('signedIn')==='1';}catch{return false;}}
-function rememberSignedIn(on){try{if(on)localStorage.setItem('signedIn','1');else localStorage.removeItem('signedIn');}catch{}}
+// 2026-09-29까지는 로그인(과 그 전의 관리자 토큰)을 브라우저에 오래 남겼으므로, 남은 것을 지운다.
+try{for(const key of Object.keys(localStorage))if(['signedIn','adminToken'].includes(key)||key.startsWith('firebase:'))localStorage.removeItem(key);}catch{}
+try{indexedDB.deleteDatabase('firebaseLocalStorageDb');}catch{}
+function wasSignedIn(){try{return sessionStorage.getItem('signedIn')==='1';}catch{return false;}}
+function rememberSignedIn(on){try{if(on)sessionStorage.setItem('signedIn','1');else sessionStorage.removeItem('signedIn');}catch{}}
+const IDLE_LIMIT=30*60*1000;
+let lastActive=Date.now();try{lastActive=Number(sessionStorage.getItem('lastActive'))||lastActive;}catch{}
+const idle=()=>Date.now()-lastActive>IDLE_LIMIT;
 function loadAuth(){
     authLoading??=(async()=>{
         const [app,fb]=await Promise.all([import(FIREBASE+'firebase-app.js'),import(FIREBASE+'firebase-auth.js')]);
         const config=await (await fetch('/__/firebase/init.json')).json();
-        const instance=fb.getAuth(app.initializeApp(config));
+        const instance=fb.initializeAuth(app.initializeApp(config),{persistence:fb.browserSessionPersistence,popupRedirectResolver:fb.browserPopupRedirectResolver});
         await instance.authStateReady();
+        if(instance.currentUser&&idle())await fb.signOut(instance);  // reloaded after being left alone
         if(!instance.currentUser)rememberSignedIn(false);
         return auth={instance,fb};
     })().catch(error=>{authLoading=null;throw error;});
@@ -26,22 +34,28 @@ async function idToken(){
     if(!auth&&!wasSignedIn())return '';
     try{const {instance}=await loadAuth();return instance.currentUser?await instance.currentUser.getIdToken():'';}catch{return '';}
 }
-async function authHeaders(extra={}){const headers={...extra};if(adminToken)headers['X-Admin-Token']=adminToken;const token=await idToken();if(token)headers['X-Id-Token']=token;return headers;}
+// Any touch of the page counts as use; the time is kept in this tab so a reload goes on counting.
+function checkIdle(){if(auth?.instance.currentUser&&idle())signOutUser().then(()=>notice('30분 동안 사용하지 않아 로그아웃했습니다. 이어서 보시려면 다시 로그인해 주세요.'));}
+function keepActive(){lastActive=Date.now();try{sessionStorage.setItem('lastActive',String(lastActive));}catch{}}
+function markActive(){checkIdle();if(Date.now()-lastActive>=10000)keepActive();}
+for(const type of ['pointerdown','keydown','wheel','touchstart'])window.addEventListener(type,markActive,{capture:true,passive:true});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkIdle();});
+async function authHeaders(extra={}){const headers={...extra};const token=await idToken();if(token)headers['X-Id-Token']=token;return headers;}
 const SIGN_IN_ERRORS={'auth/popup-blocked':'로그인 창이 막혔습니다. 브라우저에서 이 사이트의 팝업을 허용해 주세요.','auth/operation-not-allowed':'구글 로그인이 아직 켜져 있지 않습니다. 관리자에게 알려 주세요.','auth/unauthorized-domain':'이 주소에서는 로그인할 수 없습니다. kor-teacher-help.web.app에서 로그인해 주세요.','auth/network-request-failed':'네트워크에 연결할 수 없어 로그인하지 못했습니다.'};
 // 팝업은 누른 그 순간에 열려야 막히지 않으므로(특히 Safari), 로그인 단추가 보일 때 SDK를 미리 불러 둔다.
 function preloadAuth(){if(statusData?.public&&!statusData.user)loadAuth().catch(()=>{});}
 async function signIn(){
-    try{const {instance,fb}=auth||await loadAuth();await fb.signInWithPopup(instance,new fb.GoogleAuthProvider());rememberSignedIn(true);await loadStatus();return true;}
+    try{const {instance,fb}=auth||await loadAuth();await fb.signInWithPopup(instance,new fb.GoogleAuthProvider());rememberSignedIn(true);keepActive();await loadStatus();return true;}
     catch(error){if(['auth/popup-closed-by-user','auth/cancelled-popup-request'].includes(error?.code))return false;const message=SIGN_IN_ERRORS[error?.code]||'로그인하지 못했습니다. 잠시 후 다시 시도해 주세요.';$('#account-status').textContent=message;notice(message,true);return false;}
 }
 async function signOutUser(){
     try{if(auth)await auth.fb.signOut(auth.instance);}catch{}
-    rememberSignedIn(false);setAdminToken('');await loadStatus();
+    rememberSignedIn(false);await loadStatus();
     if(location.hash==='#admin')showView('search');
 }
 function renderAccount(){
     const user=statusData?.user,admin=Boolean(statusData?.admin);
-    $('#sign-in').hidden=Boolean(user);$('#sign-out').hidden=!user&&!adminToken;$('#admin-open').hidden=!admin;
+    $('#sign-in').hidden=Boolean(user);$('#sign-out').hidden=!user;$('#admin-open').hidden=!admin;
     $('#account-status').textContent=user?(admin?`${user.email} · 관리자로 로그인했습니다. 인용문과 원문, 쪽 전문을 볼 수 있고 AI 해설 횟수 제한이 없습니다.`:user.reader?`${user.email} · 인용문과 원문, 쪽 전문을 볼 수 있는 계정입니다.`:`${user.email} · 아직 인용문과 원문 열람을 허락받지 않은 계정입니다. 관리자에게 이 주소를 알려 주세요.`):admin?'관리자 토큰으로 확인되었습니다.':'로그인하지 않았습니다.';
     $('#nav-admin').hidden=!(statusData?.public&&admin);
 }
@@ -350,7 +364,6 @@ document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>doc
 $('#settings-dialog').addEventListener('close',()=>{$('#api-key').value='';});
 $('#key-form').onsubmit=async event=>{event.preventDefault();const field=$('#api-key');const key=field.value.trim();field.value='';try{const data=await api('/api/key',{key});await loadStatus();$('#key-status').textContent=data.message;}catch(error){$('#key-status').textContent=error.message;}};
 $('#disconnect').onclick=async()=>{try{const data=await api('/api/key',{key:''});await loadStatus();$('#key-status').textContent=data.message;}catch(error){$('#key-status').textContent=error.message;}};
-function setAdminToken(value){adminToken=value;try{if(value)localStorage.setItem('adminToken',value);else localStorage.removeItem('adminToken');}catch{}}
 $('#sign-in').onclick=()=>signIn();
 $('#sign-out').onclick=()=>signOutUser();
 $('#admin-open').onclick=()=>{$('#settings-dialog').close();showView('admin');};
@@ -551,6 +564,8 @@ function showView(name,push=true){
     loadTerms().then(renderTermsView).catch(error=>{$('#terms-count').textContent=error.message;});
 }
 window.addEventListener('popstate',()=>showView(viewOfHash(),false));
+// The back button can bring back the page as it was left (bfcache), so the time left alone is checked then too.
+window.addEventListener('pageshow',event=>{if(event.persisted)checkIdle();});
 let termsTyping=null;
 $('#terms-filter').addEventListener('input',event=>{clearTimeout(termsTyping);termsTyping=setTimeout(()=>{termsState.query=event.target.value;termsState.initial='';termsState.shown=PAGE;renderTermsView();},120);});
 document.querySelectorAll('#terms-scope button').forEach(b=>b.onclick=()=>{termsState.scope=Number(b.dataset.scope);termsState.shown=PAGE;renderTermsView();});
@@ -570,5 +585,5 @@ if(restored?.question){
 }
 if(location.hash==='#terms')showView('terms',false);
 loadStatus().then(()=>{if(location.hash==='#admin'&&statusData?.admin)showView('admin',false);});
-setInterval(()=>{if(!document.hidden)loadStatus();},15000);
+setInterval(()=>{checkIdle();if(!document.hidden)loadStatus();},15000);
 
