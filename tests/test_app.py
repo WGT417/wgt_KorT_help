@@ -144,6 +144,14 @@ class HTTPTests(unittest.TestCase):
     def test_assets(self):
         for path in ['/','/app.js','/style.css','/ux.css','/manifest.webmanifest','/sw.js','/icon-192.png','/icon-512.png']:
             with self.request(path) as r:self.assertEqual(r.status,200)
+    def test_local_pages_are_whole_without_signing_in(self):
+        # On this computer the reader owns the books: no sign-in, the whole page as before.
+        with self.request('/api/pages/1') as r:data=json.load(r)
+        self.assertNotIn('restricted',data);self.assertTrue(data['text'])
+        with self.request('/api/status') as r:status=json.load(r)
+        self.assertTrue(status['whole_pages']);self.assertIsNone(status['user'])
+        with self.assertRaises(HTTPError) as e:self.request('/api/readers')
+        self.assertEqual(e.exception.code,403)
     def test_term_list_and_card(self):
         import gzip
         with self.request('/api/terms') as r:plain=json.load(r)
@@ -330,6 +338,36 @@ class QuotaTests(unittest.TestCase):
             # A new day starts fresh.
             self.assertEqual(q.peek('e'),3)
 
+class AccessTests(unittest.TestCase):
+    def claims(self,**changes):
+        now=time.time()
+        claims={'iss':'https://securetoken.google.com/kor-teacher-help','aud':'kor-teacher-help','sub':'uid-1','auth_time':now-10,'exp':now+3000,
+                'email':'Teacher@Example.com','email_verified':True,'firebase':{'sign_in_provider':'google.com'}}
+        claims.update(changes);return claims
+    def test_only_a_confirmed_google_account_of_this_project_counts(self):
+        import access
+        self.assertEqual(access.check_claims(self.claims()),'teacher@example.com')
+        for bad in [{'iss':'https://securetoken.google.com/other'},{'aud':'other'},{'sub':''},{'auth_time':time.time()+3600},{'auth_time':None},
+                    {'email_verified':False},{'email_verified':'true'},{'firebase':{'sign_in_provider':'password'}},{'firebase':None},{'email':'not-an-email'}]:
+            self.assertEqual(access.check_claims(self.claims(**bad)),'',bad)
+    def test_emails_are_compared_in_one_form(self):
+        import access
+        self.assertEqual(access.normal('  Name.Surname@Gmail.COM '),'name.surname@gmail.com')
+        for bad in ['','name','@gmail.com','name@','name@gmail','a b@gmail.com',None,3,['x@y.com']]:self.assertEqual(access.normal(bad),'',bad)
+        with patch.dict('os.environ',{'ADMIN_EMAILS':' Admin@Example.com, ,second@example.org,broken'}):
+            self.assertEqual(access.admin_emails(),{'admin@example.com','second@example.org'})
+    def test_a_token_that_cannot_be_checked_is_nobody(self):
+        import access
+        # Here google-auth is not installed, so even a well-formed token proves nothing.
+        for token in ['','short','x'*5000,None,'a.b.c'*10]:self.assertEqual(access.verify_token(token),'')
+    def test_memory_readers_add_and_remove(self):
+        import access
+        readers=access.MemoryReaders()
+        readers.add('a@example.com','국어과','admin@example.com')
+        self.assertTrue(readers.allowed('a@example.com'));self.assertFalse(readers.allowed('b@example.com'))
+        self.assertEqual([(r['email'],r['note'],r['added_by']) for r in readers.list()],[('a@example.com','국어과','admin@example.com')])
+        self.assertTrue(readers.remove('a@example.com'));self.assertFalse(readers.remove('a@example.com'));self.assertFalse(readers.allowed('a@example.com'))
+
 class PublicModeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -339,12 +377,66 @@ class PublicModeTests(unittest.TestCase):
         cls.base=f'http://127.0.0.1:{server.PORT}'
     @classmethod
     def tearDownClass(cls):cls.http.shutdown();cls.http.server_close();server.PORT=cls.old_port
+    ACCOUNTS={'token-admin-0123456789':'admin@example.com','token-reader-0123456789':'reader@example.com','token-other-0123456789':'other@example.com'}
     def setUp(self):
-        import quota
+        import quota, access
         patches=[patch.object(server,'PUBLIC',True),patch.object(server,'ADMIN_TOKEN','test-admin-token'),patch.object(server,'QUOTA',quota.MemoryQuota()),
                  patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key:s),patch.object(server,'reason',return_value={'title':'mock'}),
-                 patch.object(quota,'LIMIT',3)]
+                 patch.object(quota,'LIMIT',3),patch.object(server,'READERS',access.MemoryReaders()),patch.object(server,'ADMIN_EMAILS',{'admin@example.com'}),
+                 patch.object(access,'verify_token',lambda token:self.ACCOUNTS.get(token,''))]
         for p in patches:p.start();self.addCleanup(p.stop)
+    def as_(self,who):return {'X-Id-Token':f'token-{who}-0123456789'}
+    def page(self,**headers):
+        with self.request('/api/pages/1',headers=headers or None) as r:return json.load(r)
+    def status(self,**headers):
+        with self.request('/api/status',headers=headers or None) as r:return json.load(r)
+    def test_whole_pages_only_for_admins_and_the_readers_they_let_in(self):
+        # The books are sold: a visitor gets which book and page, never the page itself.
+        for headers in [{},self.as_('other'),self.as_('reader'),{'X-Id-Token':'forged-token-0123456789'},{'X-Admin-Token':'wrong'}]:
+            data=self.page(**headers)
+            self.assertTrue(data['restricted'],headers);self.assertEqual(data['id'],1);self.assertTrue(data['title'])
+            for key in ['text','original_text','reading_blocks','compact']:self.assertNotIn(key,data)
+        self.assertIsNone(self.status()['user']);self.assertFalse(self.status()['whole_pages'])
+        self.assertEqual(self.status(**self.as_('other'))['user'],{'email':'other@example.com','admin':False,'reader':False})
+        for headers in [self.as_('admin'),{'X-Admin-Token':'test-admin-token'}]:
+            data=self.page(**headers);self.assertNotIn('restricted',data);self.assertTrue(data['text'])
+        self.assertEqual(self.status(**self.as_('admin'))['user'],{'email':'admin@example.com','admin':True,'reader':True})
+        # The admin lets one account in; only that account starts seeing whole pages.
+        with self.request('/api/readers',{'email':' Reader@Example.com ','note':'국어과'},self.as_('admin')) as r:data=json.load(r)
+        self.assertEqual([(x['email'],x['note'],x['added_by']) for x in data['readers']],[('reader@example.com','국어과','admin@example.com')])
+        self.assertEqual(data['admins'],['admin@example.com'])
+        self.assertTrue(self.page(**self.as_('reader'))['text']);self.assertTrue(self.page(**self.as_('other'))['restricted'])
+        self.assertEqual(self.status(**self.as_('reader'))['user'],{'email':'reader@example.com','admin':False,'reader':True})
+        self.assertFalse(self.status(**self.as_('reader'))['admin'])
+        # Taking the account out closes it again at once.
+        with self.request('/api/readers/remove',{'email':'reader@example.com'},self.as_('admin')) as r:data=json.load(r)
+        self.assertEqual(data['readers'],[]);self.assertIn('해제',data['message'])
+        self.assertTrue(self.page(**self.as_('reader'))['restricted'])
+    def test_only_admins_see_and_change_the_reader_list(self):
+        for headers in [{},self.as_('reader'),self.as_('other')]:
+            with self.assertRaises(HTTPError) as e:self.request('/api/readers',headers=headers or None)
+            self.assertEqual(e.exception.code,403)
+            for path in ['/api/readers','/api/readers/remove']:
+                with self.assertRaises(HTTPError) as e:self.request(path,{'email':'other@example.com'},headers or None)
+                self.assertEqual(e.exception.code,403)
+        self.assertFalse(server.READERS.allowed('other@example.com'))
+        with self.request('/api/readers',headers={'X-Admin-Token':'test-admin-token'}) as r:self.assertEqual(json.load(r),{'readers':[],'admins':['admin@example.com']})
+        for body in [{'email':'not-an-email'},{'email':''},{},{'email':'Admin@Example.com'},{'email':'a@example.com','note':'가'*61},{'email':'a@example.com','note':3}]:
+            with self.assertRaises(HTTPError) as e:self.request('/api/readers',body,self.as_('admin'))
+            self.assertEqual(e.exception.code,400,body)
+        self.assertEqual(server.READERS.list(),[])
+        with self.request('/api/readers/remove',{'email':'nobody@example.com'},self.as_('admin')) as r:self.assertIn('목록에 없습니다',json.load(r)['message'])
+    def test_reader_list_down_leaves_whole_pages_to_admins(self):
+        server.READERS.add('reader@example.com','','admin@example.com')
+        with patch.object(server,'READERS',None):
+            self.assertTrue(self.page(**self.as_('reader'))['restricted'])
+            self.assertTrue(self.page(**self.as_('admin'))['text'])
+            with self.assertRaises(HTTPError) as e:self.request('/api/readers',headers=self.as_('admin'))
+            self.assertEqual(e.exception.code,503)
+    def test_signed_in_admin_bypasses_quota_like_the_token(self):
+        for _ in range(4):data=self.ask(**self.as_('admin'))
+        self.assertTrue(data['ai_used']);self.assertEqual(data['quota'],{'admin':True})
+        self.assertFalse(self.ask(**self.as_('reader'))['quota'].get('admin'))
     def request(self,path,body=None,headers=None):
         h={'Origin':'https://kor-teacher.web.app','X-Forwarded-Host':'kor-teacher.web.app','X-CSRF-Token':server.CSRF,'Content-Type':'application/json'}
         if headers:h.update(headers)

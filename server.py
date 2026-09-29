@@ -5,16 +5,18 @@ from urllib.error import HTTPError, URLError
 import os, json, re, threading, secrets, mimetypes, time, subprocess, gzip
 from core import ROOT, DATA, connect, init_db, search_pages, route_question, pymupdf, normalized, quality, ocr_page
 from explanation import collect_evidence, prompt_for, validate, ANSWER_SCHEMA,MODEL_ANSWER_SCHEMA,evidence_packet,resolve_evidence
-import quota
+import quota, access
 
 # PUBLIC=1 is set in the Dockerfile: bind all interfaces, trust the platform's
 # routing instead of the localhost Host check, count AI usage in Firestore,
-# and refuse the local key-saving endpoint. Everything else stays the
+# refuse the local key-saving endpoint, and show whole pages only to the
+# admins and the readers they let in (access.py). Everything else stays the
 # desktop behaviour so start.cmd keeps working unchanged.
 PUBLIC=os.environ.get('PUBLIC','')=='1'
 PORT=int(os.environ.get('PORT','8765'))
 HOST=os.environ.get('HOST','0.0.0.0' if PUBLIC else '127.0.0.1')
 ADMIN_TOKEN=os.environ.get('ADMIN_TOKEN','')
+ADMIN_EMAILS=access.admin_emails()
 ALLOWED_HOSTS={h.strip() for h in os.environ.get('ALLOWED_HOSTS','').split(',') if h.strip()}
 if not PUBLIC:
     for line in (ROOT/'.env').read_text(encoding='utf-8').splitlines() if (ROOT/'.env').exists() else []:
@@ -32,6 +34,11 @@ try:QUOTA=quota.make(QUOTA_BACKEND)
 except Exception as error:
     # Fail closed: keep the site up for search, but never generate without counting.
     print(f'quota backend unavailable ({QUOTA_BACKEND}): {error}',flush=True);QUOTA=None
+READERS_BACKEND=os.environ.get('READERS_BACKEND','firestore' if PUBLIC else 'none')
+try:READERS=access.make(READERS_BACKEND)
+except Exception as error:
+    # Fail closed like the quota: the site stays up, whole pages go to the admins only.
+    print(f'readers backend unavailable ({READERS_BACKEND}): {error}',flush=True);READERS=None
 
 def save_api_key(key):
     path=ROOT/'.env'
@@ -198,8 +205,28 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length',str(len(body)))
         self.headers_safe()
         self.end_headers();self.wfile.write(body)
+    def signed_in(self):
+        """The Google account the page signed in with (X-Id-Token), or ''."""
+        token=self.headers.get('X-Id-Token','')
+        if getattr(self,'_token',None)!=token:self._token=token;self._email=access.verify_token(token) if token else ''
+        return self._email
     def is_admin(self):
-        return bool(ADMIN_TOKEN) and secrets.compare_digest(self.headers.get('X-Admin-Token',''),ADMIN_TOKEN)
+        if ADMIN_TOKEN and secrets.compare_digest(self.headers.get('X-Admin-Token',''),ADMIN_TOKEN):return True
+        email=self.signed_in()
+        return bool(email) and email in ADMIN_EMAILS
+    def can_read_pages(self):
+        """Whole pages: always on this computer; on the public site only the admins and the
+        readers they let in. The books are sold, so everyone else gets the quoted part."""
+        if not PUBLIC or self.is_admin():return True
+        email=self.signed_in()
+        if not email or READERS is None:return False
+        try:return READERS.allowed(email)
+        except Exception as error:print(f'readers error: {error}',flush=True);return False
+    def user_state(self):
+        email=self.signed_in()
+        return {'email':email,'admin':self.is_admin(),'reader':self.can_read_pages()} if email else None
+    def readers_body(self):
+        return {'readers':READERS.list(),'admins':sorted(ADMIN_EMAILS)}
     def quota_state(self,consume=False):
         """Return the quota dict for the response; (allowed, state) when consuming.
 
@@ -248,12 +275,15 @@ class Handler(BaseHTTPRequestHandler):
                     init_passages(db)
                     reading_pages=db.execute('SELECT COUNT(*) FROM text_build WHERE version=?',(VERSION,)).fetchone()[0]
                     passage_count=db.execute("SELECT COUNT(*) FROM passages WHERE kind='body'").fetchone()[0]
-                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists(),'public':PUBLIC,'admin':self.is_admin(),'quota':self.quota_state(),'semantic_search':semantic_ready()})
+                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists(),'public':PUBLIC,'admin':self.is_admin(),'user':self.user_state(),'whole_pages':self.can_read_pages(),'quota':self.quota_state(),'semantic_search':semantic_ready()})
             match=re.fullmatch(r'/api/pages/(\d+)',path)
             if match:
                 with connect() as db:row=db.execute('SELECT p.*,b.title FROM pages p JOIN books b ON p.book_id=b.id WHERE p.id=?',(int(match[1]),)).fetchone()
                 if not row:return self.send(404,{'error':'페이지를 찾을 수 없습니다.'})
                 result=dict(row)
+                if not self.can_read_pages():
+                    # The quote the page asked about is already on screen; this adds only which book and page.
+                    return self.send(200,{**{k:result[k] for k in ('id','book_id','title','pdf_page','printed_page','number_status','quality')},'restricted':True})
                 from passage_search import layout_source
                 with connect() as db:text,blocks,reading=layout_source(db,result['id'])
                 if text:result.update(original_text=result['text'],text=text,reading_blocks=reading,corrections=sum(b.get('corrections',0) for b in reading))
@@ -274,6 +304,10 @@ class Handler(BaseHTTPRequestHandler):
                 result=term_card(label)
                 if result is None:return self.send(404,{'error':'이 용어의 카드를 찾지 못했습니다.'})
                 return self.send(200,result)
+            if path=='/api/readers':
+                if not PUBLIC or not self.is_admin():return self.send(403,{'error':'관리자만 볼 수 있습니다.'})
+                if READERS is None:return self.send(503,{'error':'열람 허용 목록을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.'})
+                return self.send(200,self.readers_body())
             match=re.fullmatch(r'/api/ask/([A-Za-z0-9_-]{16,40})',path)
             if match:
                 job=AI_JOBS.get(match[1])
@@ -331,6 +365,19 @@ class Handler(BaseHTTPRequestHandler):
                         if job_id is None:AI_LOCK.release()  # otherwise the job's thread releases it
                     if job_id:return self.send(200,wait_job(job_id,AI_JOBS[job_id],started+AI_WAIT))
                 return self.send(200,strip_sources(result))
+            if path in {'/api/readers','/api/readers/remove'}:
+                if not PUBLIC or not self.is_admin():return self.send(403,{'error':'관리자만 바꿀 수 있습니다.'})
+                if READERS is None:return self.send(503,{'error':'열람 허용 목록을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.'})
+                email=access.normal(body.get('email'))
+                if not email:return self.send(400,{'error':'구글 계정 이메일 주소를 확인해 주세요.'})
+                if path=='/api/readers/remove':
+                    removed=READERS.remove(email)
+                    return self.send(200,{**self.readers_body(),'message':f'{email}의 전문 열람을 해제했습니다.' if removed else f'{email}은 목록에 없습니다.'})
+                if email in ADMIN_EMAILS:return self.send(400,{'error':'관리자 계정은 따로 넣지 않아도 전문을 볼 수 있습니다.'})
+                note=body.get('note','')
+                if not isinstance(note,str) or len(note.strip())>60:return self.send(400,{'error':'메모는 60자 이내로 적어 주세요.'})
+                READERS.add(email,note.strip(),self.signed_in() or 'admin-token')
+                return self.send(200,{**self.readers_body(),'message':f'{email}에게 전문 열람을 허용했습니다. 그 계정으로 로그인하면 바로 보입니다.'})
             match=re.fullmatch(r'/api/pages/(\d+)/(verify|ocr)',path)
             if match:
                 if PUBLIC and not self.is_admin():return self.send(403,{'error':'관리자만 사용할 수 있습니다.'})

@@ -5,11 +5,50 @@ const number=n=>Number(n||0).toLocaleString('ko-KR');
 function el(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function notice(text,isError=false){const target=$('#feedback');target.replaceChildren();if(text)target.append(el('p',text,'notice'+(isError?' error':'')));}
 let adminToken='';try{adminToken=localStorage.getItem('adminToken')||'';}catch{}
-function authHeaders(extra={}){return adminToken?{...extra,'X-Admin-Token':adminToken}:extra;}
-async function api(path,body,retried=false){const response=await fetch(path,body===undefined?{headers:authHeaders()}:{method:'POST',headers:authHeaders({'Content-Type':'application/json','X-CSRF-Token':csrf}),body:JSON.stringify(body)});let result;try{result=await response.json();}catch{throw new Error(response.ok?'서버 응답을 읽지 못했습니다. 다시 시도해 주세요.':'서버 응답이 늦어 연결이 끊겼습니다. 잠시 후 다시 시도해 주세요.');}if(!response.ok){if(response.status===403&&result.csrf_expired&&!retried&&body!==undefined){await loadStatus();return api(path,body,true);}throw Object.assign(new Error(result.error||'요청을 처리하지 못했습니다.'),{status:response.status});}if(path==='/api/status'){$('#settings-open').hidden=result.public?false:Boolean(result.key_configured);$('#settings-label').textContent=result.public?'관리자':'연결 설정';}return result;}
+// 구글 로그인(Firebase): 공개 서재에서 쪽 전문은 관리자와, 관리자가 허용한 계정에만 보인다.
+// SDK는 로그인 버튼을 누르거나 이 브라우저에서 로그인한 적이 있을 때만 불러온다.
+const FIREBASE='https://www.gstatic.com/firebasejs/12.19.0/';
+let auth=null,authLoading=null;
+function wasSignedIn(){try{return localStorage.getItem('signedIn')==='1';}catch{return false;}}
+function rememberSignedIn(on){try{if(on)localStorage.setItem('signedIn','1');else localStorage.removeItem('signedIn');}catch{}}
+function loadAuth(){
+    authLoading??=(async()=>{
+        const [app,fb]=await Promise.all([import(FIREBASE+'firebase-app.js'),import(FIREBASE+'firebase-auth.js')]);
+        const config=await (await fetch('/__/firebase/init.json')).json();
+        const instance=fb.getAuth(app.initializeApp(config));
+        await instance.authStateReady();
+        if(!instance.currentUser)rememberSignedIn(false);
+        return auth={instance,fb};
+    })().catch(error=>{authLoading=null;throw error;});
+    return authLoading;
+}
+async function idToken(){
+    if(!auth&&!wasSignedIn())return '';
+    try{const {instance}=await loadAuth();return instance.currentUser?await instance.currentUser.getIdToken():'';}catch{return '';}
+}
+async function authHeaders(extra={}){const headers={...extra};if(adminToken)headers['X-Admin-Token']=adminToken;const token=await idToken();if(token)headers['X-Id-Token']=token;return headers;}
+const SIGN_IN_ERRORS={'auth/popup-blocked':'로그인 창이 막혔습니다. 브라우저에서 이 사이트의 팝업을 허용해 주세요.','auth/operation-not-allowed':'구글 로그인이 아직 켜져 있지 않습니다. 관리자에게 알려 주세요.','auth/unauthorized-domain':'이 주소에서는 로그인할 수 없습니다. kor-teacher-help.web.app에서 로그인해 주세요.','auth/network-request-failed':'네트워크에 연결할 수 없어 로그인하지 못했습니다.'};
+// 팝업은 누른 그 순간에 열려야 막히지 않으므로(특히 Safari), 로그인 단추가 보일 때 SDK를 미리 불러 둔다.
+function preloadAuth(){if(statusData?.public&&!statusData.user)loadAuth().catch(()=>{});}
+async function signIn(){
+    try{const {instance,fb}=auth||await loadAuth();await fb.signInWithPopup(instance,new fb.GoogleAuthProvider());rememberSignedIn(true);await loadStatus();return true;}
+    catch(error){if(['auth/popup-closed-by-user','auth/cancelled-popup-request'].includes(error?.code))return false;const message=SIGN_IN_ERRORS[error?.code]||'로그인하지 못했습니다. 잠시 후 다시 시도해 주세요.';$('#account-status').textContent=message;notice(message,true);return false;}
+}
+async function signOutUser(){
+    try{if(auth)await auth.fb.signOut(auth.instance);}catch{}
+    rememberSignedIn(false);setAdminToken('');await loadStatus();
+    if(location.hash==='#admin')showView('search');
+}
+function renderAccount(){
+    const user=statusData?.user,admin=Boolean(statusData?.admin);
+    $('#sign-in').hidden=Boolean(user);$('#sign-out').hidden=!user&&!adminToken;$('#admin-open').hidden=!admin;
+    $('#account-status').textContent=user?(admin?`${user.email} · 관리자로 로그인했습니다. 쪽 전문을 볼 수 있고 AI 해설 횟수 제한이 없습니다.`:user.reader?`${user.email} · 쪽 전문을 볼 수 있는 계정입니다.`:`${user.email} · 아직 쪽 전문 열람이 허용되지 않은 계정입니다. 관리자에게 이 주소를 알려 주세요.`):admin?'관리자 토큰으로 확인되었습니다.':'로그인하지 않았습니다.';
+    $('#nav-admin').hidden=!(statusData?.public&&admin);
+}
+async function api(path,body,retried=false){const response=await fetch(path,body===undefined?{headers:await authHeaders()}:{method:'POST',headers:await authHeaders({'Content-Type':'application/json','X-CSRF-Token':csrf}),body:JSON.stringify(body)});let result;try{result=await response.json();}catch{throw new Error(response.ok?'서버 응답을 읽지 못했습니다. 다시 시도해 주세요.':'서버 응답이 늦어 연결이 끊겼습니다. 잠시 후 다시 시도해 주세요.');}if(!response.ok){if(response.status===403&&result.csrf_expired&&!retried&&body!==undefined){await loadStatus();return api(path,body,true);}throw Object.assign(new Error(result.error||'요청을 처리하지 못했습니다.'),{status:response.status});}if(path==='/api/status'){$('#settings-open').hidden=result.public?false:Boolean(result.key_configured);$('#settings-label').textContent=result.public?(result.admin?'관리자':result.user?'내 계정':'로그인'):'연결 설정';}return result;}
 function quotaText(q){if(!q)return '';if(q.admin)return '관리자 · AI 해설 제한 없음';if(q.unavailable)return 'AI 해설 일시 중단';if(q.unlimited)return '';return `오늘 남은 AI 해설 ${q.remaining}회 / 전체 ${q.limit}회`;}
 function showQuota(q){if(!q||q.unlimited)return;const text=quotaText(q);if(text)$('#side-connection').textContent=text;$('#connection-dot').classList.toggle('off',Boolean(q.unavailable||q.remaining===0));}
-async function loadStatus(){try{statusData=await api('/api/status');csrf=statusData.csrf;const books=statusData.books;for(const cat of ['문식성','문법','문학']){const count=books.filter(b=>b.category===cat).length;$('#count-'+cat).textContent=count;$('#card-count-'+cat).textContent=count+'권';}const done=books.reduce((a,b)=>a+b.processed,0),total=books.reduce((a,b)=>a+b.pages,0);$('#index-title').textContent=`${books.length}권의 개론서를 함께 살펴봅니다`;$('#index-detail').textContent=`${number(statusData.reading_pages)} / ${number(total)}페이지 문단 정리 · 띄어쓰기 자동 처리${statusData.semantic_search?' · 뜻으로도 찾기':''}`;$('#index-badge').textContent=statusData.ocr?.status==='running'?`OCR 보완 ${statusData.ocr.done}/${statusData.ocr.total}`:statusData.reading_pages===total&&total?'문단 정리 완료':'문단 정리 중';$('#side-connection').textContent=statusData.key_configured?(statusData.public?'AI 해설 사용 가능':'OpenAI 키 연결됨'):'AI 해설에는 OpenAI 키 연결 필요';$('#mode-label').textContent=statusData.public?(statusData.admin?'공개 서재 · 관리자':'공개 서재 · AI 해설 하루 전체 '+(statusData.quota?.limit??100)+'회'):'개인 로컬 서재';$('#key-section').hidden=Boolean(statusData.public);$('#admin-section').hidden=!statusData.public;$('#settings-title').textContent=statusData.public?'관리자 설정':'OpenAI 자동 연결';if(statusData.key_configured)showQuota(statusData.quota);if(!$('#settings-dialog').open)$('#key-status').textContent=statusData.key_configured?'키가 연결되어 있습니다. 첫 해설 요청에서 API 사용 가능 여부를 확인합니다.':'현재 연결된 키가 없습니다.';$('#admin-status').textContent=statusData.admin?'관리자 토큰이 확인되었습니다.':adminToken?'저장된 토큰이 서버와 일치하지 않습니다.':'현재 관리자 토큰이 없습니다.';}catch(error){notice(statusData?.public?'서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.':'로컬 서버에 연결할 수 없습니다. 앱 실행 파일로 서버를 시작해 주세요.',true);$('#side-connection').textContent='서버 연결 안 됨';}}
+async function loadStatus(){try{statusData=await api('/api/status');csrf=statusData.csrf;const books=statusData.books;for(const cat of ['문식성','문법','문학']){const count=books.filter(b=>b.category===cat).length;$('#count-'+cat).textContent=count;$('#card-count-'+cat).textContent=count+'권';}const done=books.reduce((a,b)=>a+b.processed,0),total=books.reduce((a,b)=>a+b.pages,0);$('#index-title').textContent=`${books.length}권의 개론서를 함께 살펴봅니다`;$('#index-detail').textContent=`${number(statusData.reading_pages)} / ${number(total)}페이지 문단 정리 · 띄어쓰기 자동 처리${statusData.semantic_search?' · 뜻으로도 찾기':''}`;$('#index-badge').textContent=statusData.ocr?.status==='running'?`OCR 보완 ${statusData.ocr.done}/${statusData.ocr.total}`:statusData.reading_pages===total&&total?'문단 정리 완료':'문단 정리 중';$('#side-connection').textContent=statusData.key_configured?(statusData.public?'AI 해설 사용 가능':'OpenAI 키 연결됨'):'AI 해설에는 OpenAI 키 연결 필요';$('#mode-label').textContent=statusData.public?(statusData.admin?'공개 서재 · 관리자':'공개 서재 · AI 해설 하루 전체 '+(statusData.quota?.limit??100)+'회'):'개인 로컬 서재';$('#key-section').hidden=Boolean(statusData.public);$('#account-section').hidden=!statusData.public;$('#settings-title').textContent=statusData.public?'계정':'OpenAI 자동 연결';if(statusData.key_configured)showQuota(statusData.quota);if(!$('#settings-dialog').open)$('#key-status').textContent=statusData.key_configured?'키가 연결되어 있습니다. 첫 해설 요청에서 API 사용 가능 여부를 확인합니다.':'현재 연결된 키가 없습니다.';renderAccount();if(location.hash==='#admin'&&!statusData.admin)showView('search',false);}catch(error){notice(statusData?.public?'서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.':'로컬 서버에 연결할 수 없습니다. 앱 실행 파일로 서버를 시작해 주세요.',true);$('#side-connection').textContent='서버 연결 안 됨';}}
 function chooseCategory(category){$('#category').value=category;$('#question').focus();}
 function pageLabel(s){return s.printed_page?`책 ${s.printed_page}쪽${s.number_status==='offset'?'(계산)':''} · 자료 ${s.pdf_page}페이지`:`자료 ${s.pdf_page}페이지 · 책 쪽수 미확인`;}
 function qualityLabel(s){return s.number_status==='manual'?'책 쪽수 원문 대조 완료':s.number_status==='sequence'?'책 쪽수 연속 번호로 자동 확인':s.number_status==='offset'?'책 쪽수 여백에서 읽지 못해 앞뒤 확정 쪽의 간격으로 계산 · 인용 전 확인 권장':'책 쪽수 확인 전 · 자료 페이지 기준';}
@@ -255,15 +294,37 @@ document.querySelectorAll('[data-category]').forEach(button=>button.onclick=()=>
 document.querySelectorAll('[data-question]').forEach(button=>button.onclick=()=>{$('#question').value=button.dataset.question;$('#category').value=button.dataset.question.includes('피동')?'문법':'전체';$('#question').focus();});
 $('#nav-search').onclick=()=>{showView('search');$('#question').focus();};
 $('#nav-terms').onclick=()=>showView('terms');
+$('#nav-admin').onclick=()=>showView('admin');
 $('#terms-strip').onclick=$('#terms-guide').onclick=()=>showView('terms');
-$('#settings-open').onclick=()=>{$('#api-key').value='';$('#key-status').textContent=statusData?.key_configured?'키 연결됨 · 첫 해설 요청에서 API를 확인합니다.':'현재 연결된 키가 없습니다.';$('#settings-dialog').showModal();};
+$('#settings-open').onclick=()=>{preloadAuth();$('#api-key').value='';$('#key-status').textContent=statusData?.key_configured?'키 연결됨 · 첫 해설 요청에서 API를 확인합니다.':'현재 연결된 키가 없습니다.';$('#settings-dialog').showModal();};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>document.getElementById(button.dataset.close).close());
 $('#settings-dialog').addEventListener('close',()=>{$('#api-key').value='';});
 $('#key-form').onsubmit=async event=>{event.preventDefault();const field=$('#api-key');const key=field.value.trim();field.value='';try{const data=await api('/api/key',{key});await loadStatus();$('#key-status').textContent=data.message;}catch(error){$('#key-status').textContent=error.message;}};
 $('#disconnect').onclick=async()=>{try{const data=await api('/api/key',{key:''});await loadStatus();$('#key-status').textContent=data.message;}catch(error){$('#key-status').textContent=error.message;}};
 function setAdminToken(value){adminToken=value;try{if(value)localStorage.setItem('adminToken',value);else localStorage.removeItem('adminToken');}catch{}}
-$('#admin-form').onsubmit=async event=>{event.preventDefault();const field=$('#admin-token');const value=field.value.trim();field.value='';if(!value)return;setAdminToken(value);await loadStatus();if(!statusData?.admin){setAdminToken('');$('#admin-status').textContent='토큰이 일치하지 않아 저장하지 않았습니다.';}};
-$('#admin-clear').onclick=async()=>{setAdminToken('');await loadStatus();$('#admin-status').textContent='관리자 토큰을 해제했습니다.';};
+$('#sign-in').onclick=()=>signIn();
+$('#sign-out').onclick=()=>signOutUser();
+$('#admin-open').onclick=()=>{$('#settings-dialog').close();showView('admin');};
+// 열람 허용 관리: 관리자만 본다. 넣고 빼면 서버의 목록(Firestore)이 바로 바뀐다.
+const dateOf=iso=>{const d=new Date(iso);return iso&&!isNaN(d)?d.toLocaleDateString('ko-KR'):'';};  // 서버는 UTC로 적는다
+function renderReaders(data){
+    const list=$('#reader-list');list.replaceChildren();
+    $('#reader-count').textContent=`${data.readers.length}명`;
+    if(!data.readers.length)list.append(el('li','아직 허용한 계정이 없습니다.','reader-empty'));
+    for(const r of data.readers){
+        const row=el('li',undefined,'reader-row');const who=el('div');who.append(el('strong',r.email),el('small',[r.note,dateOf(r.added)&&dateOf(r.added)+' 허용'].filter(Boolean).join(' · ')));
+        const remove=el('button','빼기');remove.type='button';
+        remove.onclick=async()=>{if(!confirm(`${r.email}의 쪽 전문 열람을 해제할까요?`))return;try{const result=await api('/api/readers/remove',{email:r.email});renderReaders(result);$('#reader-status').textContent=result.message;}catch(error){$('#reader-status').textContent=error.message;}};
+        row.append(who,remove);list.append(row);
+    }
+    $('#admin-list').textContent=data.admins.length?data.admins.join(', '):'관리자 토큰으로만 들어와 있습니다.';
+}
+async function loadReaders(){$('#reader-status').textContent='';try{renderReaders(await api('/api/readers'));}catch(error){$('#reader-status').textContent=error.message;}}
+$('#reader-form').onsubmit=async event=>{
+    event.preventDefault();const email=$('#reader-email').value.trim(),note=$('#reader-note').value.trim();if(!email)return;
+    try{const data=await api('/api/readers',{email,note});$('#reader-email').value='';$('#reader-note').value='';renderReaders(data);$('#reader-status').textContent=data.message;}
+    catch(error){$('#reader-status').textContent=error.message;}
+};
 function readableQuote(quote,blocks){
     const needle=quote.replace(/\s/g,'').toLowerCase();
     for(const block of blocks){
@@ -280,6 +341,15 @@ async function openSource(id,quote=''){
         const target=$('#source-text');target.replaceChildren();
         const quotes=Array.isArray(quote)?quote:quote?[quote]:[];
         if(quotes.length){target.append(el('h3','이 설명의 근거'));for(const q of quotes)target.append(el('blockquote',readableQuote(q,source.reading_blocks||[]),'selected-quote'));}
+        $('#source-help').hidden=Boolean(source.restricted);
+        if(source.restricted){
+            // 개론서는 판매 중인 책이라, 공개 서재에서는 인용한 부분과 책·쪽까지만 보여 준다.
+            const box=el('div',undefined,'notice restricted-note');
+            box.append(el('p',`개론서는 판매 중인 책이라 쪽 전문은 관리자가 허용한 계정에만 보입니다. 앞뒤 맥락은 책의 ${source.printed_page?source.printed_page+'쪽':'이 쪽'}에서 확인해 주세요.`));
+            if(!statusData?.user){preloadAuth();const login=el('button','허용받은 계정으로 로그인');login.type='button';login.onclick=async()=>{if(await signIn())openSource(id,quote);};box.append(login);}
+            target.append(box);
+            $('#verify-status').textContent=qualityLabel(source);if(!$('#source-dialog').open)$('#source-dialog').showModal();target.scrollTop=0;return;
+        }
         const blocks=source.reading_blocks||[];
         for(const block of blocks){
             if(block.kind==='body'){
@@ -415,17 +485,18 @@ function renderNote(note){
     foot.append(el('p',`개론서 문단만 근거로 AI(${note.model||'언어 모델'})가 미리 쓴 풀이입니다. 보는 동안에는 AI를 쓰지 않습니다. 인용하기 전에 원문 쪽을 확인하세요.`,'small muted'));
     body.append(foot);card.append(body);return card;
 }
+const viewOfHash=()=>location.hash==='#terms'?'terms':location.hash==='#admin'?'admin':'search';
 function showView(name,push=true){
-    const terms=name==='terms';
-    $('#search-view').hidden=terms;$('#terms-view').hidden=!terms;
-    for(const [id,on] of [['#nav-search',!terms],['#nav-terms',terms]]){const b=$(id);b.classList.toggle('active',on);if(on)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}
-    // The back button returns from the cards to the question page.
-    if(push&&(location.hash==='#terms')!==terms)history.pushState(null,'',terms?'#terms':location.pathname+location.search);
-    if(!terms)return;
+    for(const view of ['search','terms','admin']){const on=view===name;$(`#${view}-view`).hidden=!on;const b=$('#nav-'+view);b.classList.toggle('active',on);if(on)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}
+    // The back button returns from the cards (or the admin page) to the question page.
+    const hash=name==='search'?'':'#'+name;
+    if(push&&location.hash!==hash)history.pushState(null,'',hash||location.pathname+location.search);
+    if(name==='search')return;
     window.scrollTo(0,0);
+    if(name==='admin')return loadReaders();
     loadTerms().then(renderTermsView).catch(error=>{$('#terms-count').textContent=error.message;});
 }
-window.addEventListener('popstate',()=>showView(location.hash==='#terms'?'terms':'search',false));
+window.addEventListener('popstate',()=>showView(viewOfHash(),false));
 let termsTyping=null;
 $('#terms-filter').addEventListener('input',event=>{clearTimeout(termsTyping);termsTyping=setTimeout(()=>{termsState.query=event.target.value;termsState.initial='';termsState.shown=PAGE;renderTermsView();},120);});
 document.querySelectorAll('#terms-scope button').forEach(b=>b.onclick=()=>{termsState.scope=Number(b.dataset.scope);termsState.shown=PAGE;renderTermsView();});
@@ -444,6 +515,6 @@ if(restored?.question){
     else if(restored.job)ask(restored.question,restored.category,restored.mode,restored);
 }
 if(location.hash==='#terms')showView('terms',false);
-loadStatus();
+loadStatus().then(()=>{if(location.hash==='#admin'&&statusData?.admin)showView('admin',false);});
 setInterval(()=>{if(!document.hidden)loadStatus();},15000);
 

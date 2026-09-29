@@ -120,5 +120,10 @@ Cloud Build가 쓰므로 배포에는 영향이 없다.
 - `dist/`(화면)만 고쳤으면 `python scripts/cloud.py hosting`(카드를 다시 쓴 뒤 `firebase deploy --only hosting`).
   `firebase deploy`를 직접 부르면 `dist/terms/`가 낡았거나 없는 채로 올라간다. 카드 파일이 없으면 화면이
   서버에 물어 보긴 하지만 다시 느려진다. 카드를 쓰려면 이 컴퓨터에 `data/`가 있어야 한다.
+- **공개 서재에서 쪽 전문은 허용한 구글 계정만 본다**(`access.py`, 2026-09-29). 개론서는 판매 중인 책이라,
+  그 전에는 `/api/pages/<번호>`로 26권 전문을 로그인 없이 받을 수 있었다. 책 본문을 내보내는 새 경로를
+  만들면 `Handler.can_read_pages()`를 거치게 한다. 관리자는 `ADMIN_EMAILS`(구글 계정)이고, 저장소가
+  공개라 이메일은 코드에 적지 않고 `deploy --admin-email`로 Cloud Run에만 둔다. 허용 목록은 Firestore
+  `readers`에 있고 화면의 **열람 허용 관리**(`#admin`)에서 넣고 뺀다.
 - 확인은 직접 `*.run.app`이 아니라 <https://kor-teacher-help.web.app/api/…>로 한다.
   이 노트북에서 run.app 직접 접속은 TLS가 끊긴다.
