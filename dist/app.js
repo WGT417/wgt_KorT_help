@@ -42,13 +42,43 @@ async function signOutUser(){
 function renderAccount(){
     const user=statusData?.user,admin=Boolean(statusData?.admin);
     $('#sign-in').hidden=Boolean(user);$('#sign-out').hidden=!user&&!adminToken;$('#admin-open').hidden=!admin;
-    $('#account-status').textContent=user?(admin?`${user.email} · 관리자로 로그인했습니다. 쪽 전문을 볼 수 있고 AI 해설 횟수 제한이 없습니다.`:user.reader?`${user.email} · 쪽 전문을 볼 수 있는 계정입니다.`:`${user.email} · 아직 쪽 전문 열람이 허용되지 않은 계정입니다. 관리자에게 이 주소를 알려 주세요.`):admin?'관리자 토큰으로 확인되었습니다.':'로그인하지 않았습니다.';
+    $('#account-status').textContent=user?(admin?`${user.email} · 관리자로 로그인했습니다. 인용문과 원문, 쪽 전문을 볼 수 있고 AI 해설 횟수 제한이 없습니다.`:user.reader?`${user.email} · 인용문과 원문, 쪽 전문을 볼 수 있는 계정입니다.`:`${user.email} · 아직 인용문과 원문 열람을 허락받지 않은 계정입니다. 관리자에게 이 주소를 알려 주세요.`):admin?'관리자 토큰으로 확인되었습니다.':'로그인하지 않았습니다.';
     $('#nav-admin').hidden=!(statusData?.public&&admin);
+}
+// 개론서는 판매 중인 책이라, 공개 서재에서 책 문장을 그대로 옮긴 인용문과 참고 원문은
+// 관리자가 허락한 계정에만 보인다. 가려진 자리에는 이 안내가 대신 선다.
+const CLOSED_TEXT='개론서는 판매 중인 책이어서, 책의 문장을 그대로 옮긴 인용문과 원문은 저작권을 지키기 위해 관리자가 열람을 허락해 드린 분께만 보여 드리고 있습니다. 너그러이 양해해 주시면 감사하겠습니다.';
+function closedNotice(rest='',after=null,text=CLOSED_TEXT){
+    const box=el('div',undefined,'notice restricted-note');box.setAttribute('role','note');
+    box.append(el('p',text+(rest?' '+rest:'')));
+    const user=statusData?.user;
+    if(user)box.append(el('p',`지금 로그인하신 계정(${user.email})은 아직 열람을 허락받지 않았습니다.`,'small'));
+    else if(statusData?.public){preloadAuth();const login=el('button','허락받은 계정으로 로그인');login.type='button';login.onclick=async()=>{if(await signIn()&&after)after();};box.append(login);}
+    return box;
+}
+// 허락받은 계정이면 공개 파일(인용문이 없다) 대신 서버에서 카드를 받는다.
+const readsQuotes=()=>Boolean(statusData?.public&&statusData.whole_pages);
+// AI 해설도 개론서 내용을 추려 쓰는 것이라 같은 기준이다: 공개 서재에서는 허락받은 계정만 쓴다.
+// 서버도 같은 기준으로 거절하므로(server.ASK_CLOSED) 이것은 누르기 전에 알려 주는 안내일 뿐이다.
+const ASK_CLOSED_TEXT='AI 해설은 개론서의 내용을 추려 쓰는 것이어서, 저작권을 지키기 위해 관리자가 열람을 허락해 드린 분께만 열어 두었습니다. 너그러이 양해해 주시면 감사하겠습니다.';
+const askClosed=()=>Boolean(statusData?.public&&!statusData.whole_pages);
+let askGate='';
+function renderAskGate(){
+    const closed=askClosed(),box=$('#ask-closed');
+    $('#ask-button').disabled=closed||$('#ask-button').textContent!=='해설 받기 →';
+    if(closed){
+        $('#side-connection').textContent='AI 해설은 허락받은 계정만';$('#mode-label').textContent='공개 서재';
+    }
+    // Rebuilt only when it changes: the status is asked for every 15 seconds.
+    const key=closed?'closed:'+(statusData.user?.email||''):'';
+    if(key===askGate)return;askGate=key;
+    box.hidden=!closed;box.replaceChildren();
+    if(closed)box.append(closedNotice('용어의 뜻은 로그인하지 않아도 용어 카드에서 바로 보실 수 있습니다.',null,ASK_CLOSED_TEXT));
 }
 async function api(path,body,retried=false){const response=await fetch(path,body===undefined?{headers:await authHeaders()}:{method:'POST',headers:await authHeaders({'Content-Type':'application/json','X-CSRF-Token':csrf}),body:JSON.stringify(body)});let result;try{result=await response.json();}catch{throw new Error(response.ok?'서버 응답을 읽지 못했습니다. 다시 시도해 주세요.':'서버 응답이 늦어 연결이 끊겼습니다. 잠시 후 다시 시도해 주세요.');}if(!response.ok){if(response.status===403&&result.csrf_expired&&!retried&&body!==undefined){await loadStatus();return api(path,body,true);}throw Object.assign(new Error(result.error||'요청을 처리하지 못했습니다.'),{status:response.status});}if(path==='/api/status'){$('#settings-open').hidden=result.public?false:Boolean(result.key_configured);$('#settings-label').textContent=result.public?(result.admin?'관리자':result.user?'내 계정':'로그인'):'연결 설정';}return result;}
 function quotaText(q){if(!q)return '';if(q.admin)return '관리자 · AI 해설 제한 없음';if(q.unavailable)return 'AI 해설 일시 중단';if(q.unlimited)return '';return `오늘 남은 AI 해설 ${q.remaining}회 / 전체 ${q.limit}회`;}
 function showQuota(q){if(!q||q.unlimited)return;const text=quotaText(q);if(text)$('#side-connection').textContent=text;$('#connection-dot').classList.toggle('off',Boolean(q.unavailable||q.remaining===0));}
-async function loadStatus(){try{statusData=await api('/api/status');csrf=statusData.csrf;const books=statusData.books;for(const cat of ['문식성','문법','문학']){const count=books.filter(b=>b.category===cat).length;$('#count-'+cat).textContent=count;$('#card-count-'+cat).textContent=count+'권';}const done=books.reduce((a,b)=>a+b.processed,0),total=books.reduce((a,b)=>a+b.pages,0);$('#index-title').textContent=`${books.length}권의 개론서를 함께 살펴봅니다`;$('#index-detail').textContent=`${number(statusData.reading_pages)} / ${number(total)}페이지 문단 정리 · 띄어쓰기 자동 처리${statusData.semantic_search?' · 뜻으로도 찾기':''}`;$('#index-badge').textContent=statusData.ocr?.status==='running'?`OCR 보완 ${statusData.ocr.done}/${statusData.ocr.total}`:statusData.reading_pages===total&&total?'문단 정리 완료':'문단 정리 중';$('#side-connection').textContent=statusData.key_configured?(statusData.public?'AI 해설 사용 가능':'OpenAI 키 연결됨'):'AI 해설에는 OpenAI 키 연결 필요';$('#mode-label').textContent=statusData.public?(statusData.admin?'공개 서재 · 관리자':'공개 서재 · AI 해설 하루 전체 '+(statusData.quota?.limit??100)+'회'):'개인 로컬 서재';$('#key-section').hidden=Boolean(statusData.public);$('#account-section').hidden=!statusData.public;$('#settings-title').textContent=statusData.public?'계정':'OpenAI 자동 연결';if(statusData.key_configured)showQuota(statusData.quota);if(!$('#settings-dialog').open)$('#key-status').textContent=statusData.key_configured?'키가 연결되어 있습니다. 첫 해설 요청에서 API 사용 가능 여부를 확인합니다.':'현재 연결된 키가 없습니다.';renderAccount();if(location.hash==='#admin'&&!statusData.admin)showView('search',false);}catch(error){notice(statusData?.public?'서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.':'로컬 서버에 연결할 수 없습니다. 앱 실행 파일로 서버를 시작해 주세요.',true);$('#side-connection').textContent='서버 연결 안 됨';}}
+async function loadStatus(){try{statusData=await api('/api/status');csrf=statusData.csrf;const books=statusData.books;for(const cat of ['문식성','문법','문학']){const count=books.filter(b=>b.category===cat).length;$('#count-'+cat).textContent=count;$('#card-count-'+cat).textContent=count+'권';}const done=books.reduce((a,b)=>a+b.processed,0),total=books.reduce((a,b)=>a+b.pages,0);$('#index-title').textContent=`${books.length}권의 개론서를 함께 살펴봅니다`;$('#index-detail').textContent=`${number(statusData.reading_pages)} / ${number(total)}페이지 문단 정리 · 띄어쓰기 자동 처리${statusData.semantic_search?' · 뜻으로도 찾기':''}`;$('#index-badge').textContent=statusData.ocr?.status==='running'?`OCR 보완 ${statusData.ocr.done}/${statusData.ocr.total}`:statusData.reading_pages===total&&total?'문단 정리 완료':'문단 정리 중';$('#side-connection').textContent=statusData.key_configured?(statusData.public?'AI 해설 사용 가능':'OpenAI 키 연결됨'):'AI 해설에는 OpenAI 키 연결 필요';$('#mode-label').textContent=statusData.public?(statusData.admin?'공개 서재 · 관리자':'공개 서재 · AI 해설 하루 전체 '+(statusData.quota?.limit??100)+'회'):'개인 로컬 서재';$('#key-section').hidden=Boolean(statusData.public);$('#account-section').hidden=!statusData.public;$('#settings-title').textContent=statusData.public?'계정':'OpenAI 자동 연결';if(statusData.key_configured)showQuota(statusData.quota);if(!$('#settings-dialog').open)$('#key-status').textContent=statusData.key_configured?'키가 연결되어 있습니다. 첫 해설 요청에서 API 사용 가능 여부를 확인합니다.':'현재 연결된 키가 없습니다.';renderAccount();renderAskGate();if(location.hash==='#admin'&&!statusData.admin)showView('search',false);}catch(error){notice(statusData?.public?'서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.':'로컬 서버에 연결할 수 없습니다. 앱 실행 파일로 서버를 시작해 주세요.',true);$('#side-connection').textContent='서버 연결 안 됨';}}
 function chooseCategory(category){$('#category').value=category;$('#question').focus();}
 function pageLabel(s){return s.printed_page?`책 ${s.printed_page}쪽${s.number_status==='offset'?'(계산)':''} · 자료 ${s.pdf_page}페이지`:`자료 ${s.pdf_page}페이지 · 책 쪽수 미확인`;}
 function qualityLabel(s){return s.number_status==='manual'?'책 쪽수 원문 대조 완료':s.number_status==='sequence'?'책 쪽수 연속 번호로 자동 확인':s.number_status==='offset'?'책 쪽수 여백에서 읽지 못해 앞뒤 확정 쪽의 간격으로 계산 · 인용 전 확인 권장':'책 쪽수 확인 전 · 자료 페이지 기준';}
@@ -61,7 +91,8 @@ function referenceButton(source,quote=''){
 function appendCitations(target,citations,sources){
     const span=el('span',undefined,'inline-citations');
     const grouped=new Map();
-    for(const citation of citations||[]){if(!grouped.has(citation.source_id))grouped.set(citation.source_id,[]);const quotes=grouped.get(citation.source_id);if(!quotes.includes(citation.quote))quotes.push(citation.quote);}
+    // Without a let-in account the citations carry only the page, not its sentence.
+    for(const citation of citations||[]){if(!grouped.has(citation.source_id))grouped.set(citation.source_id,[]);const quotes=grouped.get(citation.source_id);if(citation.quote&&!quotes.includes(citation.quote))quotes.push(citation.quote);}
     for(const [id,quotes] of grouped){const source=sources.find(s=>s.source_id===id);if(source)span.append(referenceButton(source,quotes));}
     target.append(span);
 }
@@ -192,18 +223,25 @@ function renderTerms(terms,target=$('#concepts')){
     for(const term of terms||[]){
         const card=el('article',undefined,'concept-card term-card');
         const head=el('div',undefined,'concept-head');head.append(el('span','찾아보기','badge'),el('h3',term.label));
-        const books=new Set(term.sources.map(s=>s.book)).size,defined=term.sources.filter(s=>s.quote).length;head.append(el('span',`개론서 ${books}권 · 정의 ${defined}곳 · AI 미사용`,'concept-parent'));card.append(head);
+        // A card without the books' sentences (quotes_hidden) still marks the defining pages (defines).
+        const defines=s=>Boolean(s.quote||s.defines);
+        const books=new Set(term.sources.map(s=>s.book)).size,defined=term.sources.filter(defines).length;head.append(el('span',`개론서 ${books}권 · 정의 ${defined}곳 · AI 미사용`,'concept-parent'));card.append(head);
         if(term.variants.length>1)card.append(el('p','표기: '+term.variants.join(' · '),'small muted'));
-        const quoted=term.sources.filter(s=>s.quote),others=term.sources.filter(s=>!s.quote);
-        if(quoted.length){
+        const quoted=term.sources.filter(defines),others=term.sources.filter(s=>!defines(s));
+        if(quoted.length&&!quoted.some(s=>s.quote)){
+            // Without the sentences a box per page would stand empty: one line of the defining pages.
+            const line=el('div',undefined,'term-more');line.append(el('span','이 용어를 정의한 쪽','small muted'));
+            for(const s of quoted)line.append(conceptSourceButton(s));
+            card.append(line);
+        }else if(quoted.length){
             const list=el('div',undefined,'term-sources');
             for(const s of quoted){
                 const row=el('div',undefined,'term-source');row.append(conceptSourceButton(s));
                 if(!s.indexed)row.append(el('span','찾아보기 밖','term-tag'));
                 if(s.ocr)row.append(el('span','오인식 있음','term-tag warn'));
                 // The defining sentence, then what the paragraph says next about the term.
-                const p=el('p',s.quote,'term-quote');if(s.more)p.append(document.createTextNode(' '),el('span',s.more,'term-quote-more'));
-                row.append(p);list.append(row);
+                if(s.quote){const p=el('p',s.quote,'term-quote');if(s.more)p.append(document.createTextNode(' '),el('span',s.more,'term-quote-more'));row.append(p);}
+                list.append(row);
             }
             card.append(list);
         }
@@ -220,7 +258,8 @@ function renderResults(data,restoring=false){
     $('#welcome').hidden=true;$('#results').hidden=false;
     renderConcepts(data.concepts);renderTerms(data.terms);
     $('#result-title').textContent=data.question;$('#route-badge').textContent='개론서 근거 기반 해설';
-    $('#route-reason').textContent='각 설명의 출처를 누르면 인용한 원문을 확인할 수 있습니다.';notice(data.notice);
+    const hidden=Boolean(data.quotes_hidden);
+    $('#route-reason').textContent=hidden?'각 설명마다 근거가 실린 책과 쪽을 표시했습니다. 인용한 원문은 열람을 허락받은 계정에만 보입니다.':'각 설명의 출처를 누르면 인용한 원문을 확인할 수 있습니다.';notice(data.notice);
     if(data.quota&&!restoring)showQuota(data.quota);  // a saved count is stale; loadStatus shows today's
     const answer=$('#answer');answer.replaceChildren();
     if(data.answer)answer.append(renderExplanation(data.answer,data.sources));
@@ -228,8 +267,10 @@ function renderResults(data,restoring=false){
     $('#source-count').textContent=`${bookCount}권 · ${data.sources.length}개 페이지`;
     $('#source-details').open=false;
     const target=$('#sources');target.replaceChildren();
+    if(hidden)target.append(closedNotice('해설에 쓴 책과 쪽은 아래에 그대로 적어 두었습니다.',reloadAnswer));
     for(const s of data.sources){
         const card=el('article',undefined,'source-card');const meta=el('div',undefined,'source-meta');meta.append(el('span',s.category,'badge'),el('strong',s.title));if(s.match==='semantic')meta.append(el('span','뜻이 가까운 문단','badge meaning-badge'));meta.append(el('span',pageLabel(s),'page-label'));
+        if(hidden){const bottom=el('div',undefined,'source-bottom');bottom.append(referenceButton(s));card.append(meta,bottom);target.append(card);continue;}
         const bottom=el('div',undefined,'source-bottom');bottom.append(el('p',(s.match==='semantic'?'질문의 낱말이 그대로 나오지 않지만 의미가 가까워 찾은 문단 · ':'')+(s.quality==='review'?'글자 오인식이 많은 페이지 · 원문 이미지와 대조 필요':'띄어쓰기 자동 정리 · 원문 대조 가능')+(s.corrections?` · 오인식 낱말 ${s.corrections}곳 화면 교정`:'')),referenceButton(s,s.excerpt));card.append(meta,el('p',s.display_excerpt||s.excerpt.replace(/\s+/g,' ').trim(),'reading-passage'));
         for(const block of s.structured||[])card.append(renderTable(block,'같은 쪽의 표'));
         if(s.quality==='review')card.append(el('p','이 페이지는 OCR을 다시 수행한 뒤에도 오인식이 많습니다. 인용 전 원문 이미지를 확인하세요.','notice'));
@@ -261,7 +302,14 @@ async function resumeJob(entry){
         await new Promise(resolve=>setTimeout(resolve,3000));
     }
 }
+// Signing in from the 원문 notice asks for the answer just written again, now with its quotes.
+// The job stays on the server for 30 minutes and asking for it again uses no AI 해설.
+async function reloadAnswer(){
+    const saved=savedAsk();if(!saved?.job)return;
+    try{const data=await api('/api/ask/'+saved.job);if(data.ai_used&&data.question===saved.question){renderResults(data,true);saveAsk({...saved,data});}}catch{}
+}
 async function ask(question,category,mode,resume=null){
+    if(mode==='reason'&&askClosed()){renderAskGate();$('#ask-closed').scrollIntoView({block:'nearest'});return;}
     const button=$('#ask-button');
     $('#answer').replaceChildren();$('#concepts').replaceChildren();$('#sources').replaceChildren();$('#results').hidden=true;
     button.disabled=true;button.textContent='해설 쓰는 중…';$('#results').setAttribute('aria-busy','true');
@@ -279,6 +327,7 @@ async function ask(question,category,mode,resume=null){
         }
         if(data.question!==question)throw new Error('질문과 응답이 일치하지 않아 표시하지 않았습니다. 다시 질문해 주세요.');
         // No 해설 (the day's count used up, no key, nothing found, generation failed): the page shows why and nothing else.
+        if(data.ask_closed)loadStatus();  // the page thought this account was let in; show the notice under the form
         if(!data.ai_used){if(data.quota)showQuota(data.quota);notice(data.notice||'해설을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.');saveAsk({question,category,mode});return;}
         renderResults(data);saveAsk({question,category,mode,job:entry.job,started:entry.started,data});
     }catch(error){
@@ -343,11 +392,8 @@ async function openSource(id,quote=''){
         if(quotes.length){target.append(el('h3','이 설명의 근거'));for(const q of quotes)target.append(el('blockquote',readableQuote(q,source.reading_blocks||[]),'selected-quote'));}
         $('#source-help').hidden=Boolean(source.restricted);
         if(source.restricted){
-            // 개론서는 판매 중인 책이라, 공개 서재에서는 인용한 부분과 책·쪽까지만 보여 준다.
-            const box=el('div',undefined,'notice restricted-note');
-            box.append(el('p',`개론서는 판매 중인 책이라 쪽 전문은 관리자가 허용한 계정에만 보입니다. 앞뒤 맥락은 책의 ${source.printed_page?source.printed_page+'쪽':'이 쪽'}에서 확인해 주세요.`));
-            if(!statusData?.user){preloadAuth();const login=el('button','허용받은 계정으로 로그인');login.type='button';login.onclick=async()=>{if(await signIn())openSource(id,quote);};box.append(login);}
-            target.append(box);
+            // 개론서는 판매 중인 책이라, 공개 서재에서는 책과 쪽까지만 보여 준다.
+            target.append(closedNotice(`이 쪽의 내용은 책의 ${source.printed_page?source.printed_page+'쪽':'해당 쪽'}에서 확인하실 수 있습니다.`,()=>openSource(id,quote)));
             $('#verify-status').textContent=qualityLabel(source);if(!$('#source-dialog').open)$('#source-dialog').showModal();target.scrollTop=0;return;
         }
         const blocks=source.reading_blocks||[];
@@ -400,10 +446,14 @@ async function prebuilt(path){try{const r=await fetch(path);return r.ok?await r.
 async function termFile(label){const hash=await crypto.subtle.digest('SHA-1',new TextEncoder().encode(label));return [...new Uint8Array(hash,0,8)].map(b=>b.toString(16).padStart(2,'0')).join('');}
 const termCards=new Map();
 function fetchTermCard(label){
-    if(!termCards.has(label))termCards.set(label,termFile(label).then(file=>prebuilt(`/terms/c/${file}.json`),()=>null)
-        .then(data=>data||api('/api/terms/card?q='+encodeURIComponent(label)))
-        .catch(error=>{termCards.delete(label);throw error;}));
-    return termCards.get(label);
+    // The files carry no sentence of a book, so a let-in account asks the server for the card with
+    // its quotes, and falls back to the file if the server does not answer. Signing in or out
+    // changes which one is wanted, so each is kept apart.
+    const full=readsQuotes(),key=(full?'full:':'')+label,ask=()=>api('/api/terms/card?q='+encodeURIComponent(label));
+    const file=()=>termFile(label).then(name=>prebuilt(`/terms/c/${name}.json`),()=>null);
+    if(!termCards.has(key))termCards.set(key,(full?ask().catch(()=>file()).then(data=>data||ask()):file().then(data=>data||ask()))
+        .catch(error=>{termCards.delete(key);throw error;}));
+    return termCards.get(key);
 }
 function loadTerms(){
     if(termsState.items)return Promise.resolve(termsState.items);
@@ -468,7 +518,10 @@ async function openTermCard(t){
         if(seq!==termCardSeq)return;
         const concepts=el('div'),terms=el('div');
         renderConcepts(data.concepts,concepts,'이 용어만 다룬 정리는 아직 없습니다. 관련 개념 정리 보기: ');renderTerms(data.terms,terms);
-        body.replaceChildren(...(data.note?[renderNote(data.note)]:[]),concepts,terms);
+        // Where the books' own sentences would stand, the notice says why they are not shown.
+        const hidden=data.quotes_hidden&&(data.note?.citations?.length||data.terms?.some(term=>term.sources.some(s=>s.defines)));
+        const closed=hidden?[closedNotice('풀이와 개념 정리, 근거가 실린 책과 쪽은 그대로 보실 수 있습니다.',()=>{if(seq===termCardSeq)openTermCard(t);})]:[];
+        body.replaceChildren(...(data.note?[renderNote(data.note)]:[]),concepts,...closed,terms);
     }catch(error){if(seq===termCardSeq)body.replaceChildren(el('p',error.message,'notice error'));}
 }
 function renderNote(note){
@@ -479,8 +532,9 @@ function renderNote(note){
     body.append(el('p',note.definition,'note-definition'));
     if(note.explanation?.length){const ul=el('ul',undefined,'note-explanation');for(const s of note.explanation)ul.append(el('li',s));body.append(ul);}
     if(note.examples?.length){const p=el('p',undefined,'note-examples');p.append(el('strong','예'),document.createTextNode(' '+note.examples.join(' · ')));body.append(p);}
-    const foot=el('div',undefined,'concept-sources');foot.append(el('p','근거 · 누르면 그 쪽을 열고 근거 구절을 표시합니다.','small muted'));
-    const pages=new Map();for(const c of note.citations){if(!pages.has(c.id))pages.set(c.id,{source:c,quotes:[]});pages.get(c.id).quotes.push(c.quote);}
+    const quoted=note.citations.some(c=>c.quote);
+    const foot=el('div',undefined,'concept-sources');foot.append(el('p',quoted?'근거 · 누르면 그 쪽을 열고 근거 구절을 표시합니다.':'근거 · 풀이를 쓸 때 읽은 책과 쪽입니다.','small muted'));
+    const pages=new Map();for(const c of note.citations){if(!pages.has(c.id))pages.set(c.id,{source:c,quotes:[]});if(c.quote)pages.get(c.id).quotes.push(c.quote);}
     const row=el('div',undefined,'inline-citations');for(const {source,quotes} of pages.values())row.append(referenceButton(source,quotes));foot.append(row);
     foot.append(el('p',`개론서 문단만 근거로 AI(${note.model||'언어 모델'})가 미리 쓴 풀이입니다. 보는 동안에는 AI를 쓰지 않습니다. 인용하기 전에 원문 쪽을 확인하세요.`,'small muted'));
     body.append(foot);card.append(body);return card;

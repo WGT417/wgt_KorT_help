@@ -156,5 +156,9 @@ table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-he
 .reader-row button{margin-left:auto;flex:none}
 .reader-empty{padding:14px 16px;color:var(--muted);font-size:13px}
 .restricted-note p{margin:0}
+.restricted-note p+p{margin-top:8px;overflow-wrap:anywhere}
 .restricted-note button{margin-top:12px}
+/* In a card or the 참고 원문 list the notice sits between other blocks. */
+#term-dialog-body .restricted-note,#sources .restricted-note{margin:14px 0}
+#ask-closed .restricted-note{margin:14px 0 0}
 @media(max-width:560px){.reader-fields{grid-template-columns:1fr}.reader-fields>div+div .field-label{margin-top:12px}}

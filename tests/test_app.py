@@ -377,7 +377,7 @@ class PublicModeTests(unittest.TestCase):
         cls.base=f'http://127.0.0.1:{server.PORT}'
     @classmethod
     def tearDownClass(cls):cls.http.shutdown();cls.http.server_close();server.PORT=cls.old_port
-    ACCOUNTS={'token-admin-0123456789':'admin@example.com','token-reader-0123456789':'reader@example.com','token-other-0123456789':'other@example.com'}
+    ACCOUNTS={'token-admin-0123456789':'admin@example.com','token-reader-0123456789':'reader@example.com','token-other-0123456789':'other@example.com','token-member-0123456789':'member@example.com'}
     def setUp(self):
         import quota, access
         patches=[patch.object(server,'PUBLIC',True),patch.object(server,'ADMIN_TOKEN','test-admin-token'),patch.object(server,'QUOTA',quota.MemoryQuota()),
@@ -433,22 +433,72 @@ class PublicModeTests(unittest.TestCase):
             self.assertTrue(self.page(**self.as_('admin'))['text'])
             with self.assertRaises(HTTPError) as e:self.request('/api/readers',headers=self.as_('admin'))
             self.assertEqual(e.exception.code,503)
+    def test_book_sentences_only_for_admins_and_the_readers_they_let_in(self):
+        # Quotes and 참고 원문 are the books' own sentences: a visitor gets the 풀이, the 해설 and book·page only.
+        quoted={'source_id':'S1','quote':'책에서 그대로 옮긴 문장'}
+        server.reason.return_value={'title':'mock','sections':[{'title':'s','points':[{'label':'l','text':'t','examples':[],'citations':[quoted]}],'subsections':[]}],'summary':{'columns':['a'],'rows':[{'cells':['x'],'citations':[quoted]}]}}
+        def card(**headers):
+            with self.request('/api/terms/card?q='+__import__('urllib.parse').parse.quote('관형절'),headers=headers or None) as r:return json.load(r)
+        server.READERS.add('reader@example.com','','admin@example.com')
+        # Where the sentences would stand: the index rows and the 풀이's citations (the 풀이 itself is our own words).
+        where=lambda data:json.dumps([data['terms'],(data['note'] or {}).get('citations')],ensure_ascii=False)
+        for headers in [{},self.as_('other')]:
+            data=card(**headers)
+            self.assertTrue(data['quotes_hidden']);self.assertNotIn('관형사절이라고 부른다',where(data))
+            self.assertFalse(any('quote' in s or 'more' in s for t in data['terms'] for s in t['sources']))
+            self.assertTrue(any(s['defines'] for t in data['terms'] for s in t['sources']))
+            self.assertTrue(data['terms'][0]['sources'][0]['id'] and data['terms'][0]['sources'][0]['printed_page'])
+            if data['note']:self.assertFalse(any('quote' in c for c in data['note']['citations']))
+            self.assertTrue(self.ask(**(headers or {'X-Id-Token':'none-0123456789'}))['ask_closed'])  # ask() alone signs in as member
+            with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'search'},headers or None) as r:answer=json.load(r)
+            self.assertTrue(answer['quotes_hidden']);self.assertTrue(answer['sources'])
+            for s in answer['sources']:
+                self.assertTrue(s['title'] and s['source_id'])
+                for key in ['excerpt','display_excerpt','structured','text','evidence_text']:self.assertNotIn(key,s)
+        for headers in [self.as_('admin'),self.as_('reader')]:
+            data=card(**headers);self.assertNotIn('quotes_hidden',data)
+            self.assertIn('관형사절이라고 부른다',where(data))
+            answer=self.ask(**headers);self.assertNotIn('quotes_hidden',answer);self.assertTrue(answer['sources'][0]['excerpt'])
+            self.assertEqual(answer['answer']['sections'][0]['points'][0]['citations'][0]['quote'],'책에서 그대로 옮긴 문장')
+    def test_ai_explanation_only_for_admins_and_the_readers_they_let_in(self):
+        # The 해설 condenses the books: a visitor or an account not let in reads why, and nothing is spent.
+        server.reason.reset_mock()
+        for headers in [{'X-Id-Token':'none-0123456789'},self.as_('other'),{'X-Admin-Token':'wrong'}]:
+            data=self.ask(**headers)
+            self.assertTrue(data['ask_closed']);self.assertFalse(data['ai_used']);self.assertIn('허락',data['notice'])
+            self.assertEqual(data['sources'],[]);self.assertIsNone(data['answer']);self.assertIsNone(data['quota'])
+        server.reason.assert_not_called();self.assertEqual(self.status()['quota']['remaining'],3)
+        self.assertTrue(self.ask()['ai_used']);self.assertEqual(self.status()['quota']['remaining'],2)
+        server.READERS.add('reader@example.com','','admin@example.com')
+        self.assertTrue(self.ask(**self.as_('reader'))['ai_used']);self.assertTrue(self.ask(**self.as_('admin'))['ai_used'])
+    def test_closed_view_copies_and_the_card_files_carry_no_quote(self):
+        # The AI job result is shared by every poll, so hiding the quotes must not change it.
+        full=server.term_card('관형절');before=json.dumps(full,ensure_ascii=False)
+        closed=server.closed_view(full)
+        self.assertEqual(json.dumps(full,ensure_ascii=False),before)
+        # scripts/build_term_cards.py writes closed_view(term_card(label)): no row keeps a sentence.
+        self.assertTrue(any(s['quote'] for t in full['terms'] for s in t['sources']))
+        self.assertFalse(any('quote' in s or 'more' in s for t in closed['terms'] for s in t['sources']))
+        self.assertFalse(any('quote' in c for c in closed['note']['citations']))
+        self.assertEqual(server.closed_view({'question':'q','pending':'job'})['pending'],'job')
     def test_signed_in_admin_bypasses_quota_like_the_token(self):
         for _ in range(4):data=self.ask(**self.as_('admin'))
         self.assertTrue(data['ai_used']);self.assertEqual(data['quota'],{'admin':True})
-        self.assertFalse(self.ask(**self.as_('reader'))['quota'].get('admin'))
+        self.assertFalse(self.ask(**self.as_('member'))['quota'].get('admin'))
     def request(self,path,body=None,headers=None):
         h={'Origin':'https://kor-teacher.web.app','X-Forwarded-Host':'kor-teacher.web.app','X-CSRF-Token':server.CSRF,'Content-Type':'application/json'}
         if headers:h.update(headers)
         return urlopen(Request(self.base+path,data=json.dumps(body).encode() if body is not None else None,headers=h),timeout=60)  # a cold vector search can take tens of seconds
     def ask(self,**headers):
-        with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'reason'},headers or None) as r:return json.load(r)
-    def test_everyone_shares_one_daily_pool_and_no_cookie_is_set(self):
+        # The AI 해설 is for let-in accounts only: member is one, let in here so the reader-list tests stay empty.
+        server.READERS.add('member@example.com','','admin@example.com')
+        with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'reason'},headers or self.as_('member')) as r:return json.load(r)
+    def test_let_in_accounts_share_one_daily_pool_and_no_cookie_is_set(self):
         with self.request('/api/status') as r:
             status=json.load(r);self.assertIsNone(r.headers.get('Set-Cookie'))
         self.assertTrue(status['public']);self.assertFalse(status['admin']);self.assertEqual(status['quota'],{'limit':3,'remaining':3})
-        # Separate visitors, each with their own cookie: the count still runs down together.
-        results=[self.ask(Cookie=f'__session=visitor{n}') for n in range(4)]
+        # Separate browsers of let-in accounts, each with their own cookie: the count still runs down together.
+        results=[self.ask(**self.as_('member'),Cookie=f'__session=visitor{n}') for n in range(4)]
         self.assertEqual([d['ai_used'] for d in results],[True,True,True,False])
         self.assertEqual([d['quota']['remaining'] for d in results],[2,1,0,0])
         # The page shows only a 해설, so a spent day answers at once with the notice and no search.
@@ -456,7 +506,7 @@ class PublicModeTests(unittest.TestCase):
     def test_admin_token_bypasses_quota(self):
         for _ in range(4):data=self.ask(**{'X-Admin-Token':'test-admin-token'})
         self.assertTrue(data['ai_used']);self.assertEqual(data['quota'],{'admin':True})
-        self.assertFalse(self.ask(**{'X-Admin-Token':'wrong'})['quota'].get('admin'))
+        self.assertTrue(self.ask(**{'X-Admin-Token':'wrong'})['ask_closed'])
     def test_failed_generation_refunds_the_attempt(self):
         with patch.object(server,'reason',side_effect=ValueError('OpenAI 실패')):data=self.ask()
         self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('실패',data['notice'])

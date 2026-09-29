@@ -9,7 +9,11 @@ entries, the term index, the 풀이 and the library, so it can be written ahead
 and served from the Hosting CDN like app.js.
 
     dist/terms/index.json          the same body as GET /api/terms
-    dist/terms/c/<name>.json       the same body as GET /api/terms/card?q=<label>
+    dist/terms/c/<name>.json       GET /api/terms/card?q=<label> as a visitor the admin
+                                   has not let in gets it (server.closed_view): anyone
+                                   can fetch these files, and the books are sold, so
+                                   they carry no sentence of a book. A let-in account's
+                                   page asks the server for the card with its quotes.
 
 <name> is the first 16 hex digits of SHA-1 over the label as the list gives
 it; the page computes the same name (dist/app.js termFile). A card the files
@@ -35,7 +39,7 @@ def file_name(label):return hashlib.sha1(label.encode('utf-8')).hexdigest()[:16]
 def dump(data):return json.dumps(data,ensure_ascii=False,separators=(',',':')).encode()
 
 def main():
-    from server import term_card,catalog_body
+    from server import term_card,catalog_body,closed_view
     started=time.monotonic()
     body=catalog_body();items=json.loads(body['plain'])['items']
     # Written outside dist/ first, so a build stopped halfway is never deployed.
@@ -49,7 +53,7 @@ def main():
         names[name]=label
         card=term_card(label)
         if card is None:empty.append(label);continue
-        data=dump(card);(temporary/'c'/(name+'.json')).write_bytes(data)
+        data=dump(closed_view(card));(temporary/'c'/(name+'.json')).write_bytes(data)
         written+=1;sizes.append(len(data))
         if i%500==0:print(f'{i:,} / {len(items):,}',flush=True)
     shutil.rmtree(OUT,ignore_errors=True);shutil.move(temporary,OUT)

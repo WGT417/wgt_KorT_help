@@ -100,12 +100,40 @@ def refund_quota(admin):
 def spent_notice():
     return f"오늘 서재 전체에 열어 둔 AI 해설 {quota.LIMIT}회를 모두 사용했습니다. 한국 시각 자정에 다시 채워지니 내일 다시 이용해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다."
 PAUSED='지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 중단했습니다. 잠시 후 다시 시도해 주세요.'
+# The 해설 condenses the books' pages, book by book, so on the public site it follows the same
+# rule as their quotes: only the admins and the accounts they let in (2026-09-29).
+ASK_CLOSED='AI 해설은 개론서의 내용을 추려 쓰는 것이어서, 저작권을 지키기 위해 관리자가 열람을 허락해 드린 분께만 열어 두었습니다. 너그러이 양해해 주시면 감사하겠습니다. 용어의 뜻은 로그인하지 않아도 용어 카드에서 바로 보실 수 있습니다.'
 NO_KEY='AI 해설을 쓰려면 OpenAI API 키를 연결해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다.'
 
 def strip_sources(result):
     for source in result['sources']:
         source.pop('text',None);source.pop('evidence_text',None)
     return result
+
+# 개론서는 판매 중인 책이라, 책 문장을 그대로 옮긴 인용문과 참고 원문은 관리자가
+# 허락한 계정에만 보낸다. 다른 방문자는 풀이·해설·개념 정리와 책·쪽까지 받는다.
+# 출처는 남길 것만 고른다: 빼는 목록으로 두면 새로 붙는 본문 필드가 그대로 샌다.
+SOURCE_KEYS=('id','source_id','book_id','title','category','pdf_page','printed_page','number_status','quality','match','kind')
+def closed_view(result):
+    """The same answer or card without the books' own sentences. Pure: the AI job
+    result is shared by every poll, so it is copied, never changed in place."""
+    if not isinstance(result,dict):return result
+    view=json.loads(json.dumps(result,ensure_ascii=False))
+    def unquote(node):
+        if isinstance(node,dict):
+            node.pop('quote',None)
+            for value in node.values():unquote(value)
+        elif isinstance(node,list):
+            for value in node:unquote(value)
+    if isinstance(view.get('sources'),list):view['sources']=[{k:s[k] for k in SOURCE_KEYS if k in s} for s in view['sources']]
+    unquote(view.get('answer'))
+    if isinstance(view.get('note'),dict):unquote(view['note'].get('citations'))
+    for term in view.get('terms') or []:
+        for s in term.get('sources',[]):
+            # Which pages define the term stays known, so the card still lists them first.
+            s['defines']=bool(s.pop('quote',None));s.pop('more',None)
+    view['quotes_hidden']=True
+    return view
 
 def generate(job,query,category,state,admin):
     result=job['result']
@@ -222,6 +250,9 @@ class Handler(BaseHTTPRequestHandler):
         if not email or READERS is None:return False
         try:return READERS.allowed(email)
         except Exception as error:print(f'readers error: {error}',flush=True);return False
+    def view(self,result):
+        """What this visitor may receive of an answer or a card (closed_view)."""
+        return result if self.can_read_pages() else closed_view(result)
     def user_state(self):
         email=self.signed_in()
         return {'email':email,'admin':self.is_admin(),'reader':self.can_read_pages()} if email else None
@@ -303,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1<=len(label)<=100:return self.send(400,{'error':'용어를 확인해 주세요.'})
                 result=term_card(label)
                 if result is None:return self.send(404,{'error':'이 용어의 카드를 찾지 못했습니다.'})
-                return self.send(200,result)
+                return self.send(200,self.view(result))
             if path=='/api/readers':
                 if not PUBLIC or not self.is_admin():return self.send(403,{'error':'관리자만 볼 수 있습니다.'})
                 if READERS is None:return self.send(503,{'error':'열람 허용 목록을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.'})
@@ -312,7 +343,7 @@ class Handler(BaseHTTPRequestHandler):
             if match:
                 job=AI_JOBS.get(match[1])
                 if not job:return self.send(404,{'error':'작성 중이던 해설을 찾지 못했습니다. 서버가 다시 시작되었을 수 있으니 다시 질문해 주세요.'})
-                return self.send(200,wait_job(match[1],job,time.monotonic()+AI_WAIT))
+                return self.send(200,self.view(wait_job(match[1],job,time.monotonic()+AI_WAIT)))
             allowed={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/ux.css':'ux.css','/sw.js':'sw.js','/manifest.webmanifest':'manifest.webmanifest','/icon.svg':'icon.svg','/icon-192.png':'icon-192.png','/icon-512.png':'icon-512.png'}
             if path not in allowed:return self.send(404,{'error':'찾을 수 없습니다.'})
             file=ROOT/'dist'/allowed[path]
@@ -342,6 +373,8 @@ class Handler(BaseHTTPRequestHandler):
                 if category not in {'전체','문식성','문법','문학'} or mode not in {'search','reason'}:return self.send(400,{'error':'검색 조건을 확인해 주세요.'})
                 use_ai,why=route_question(mode)
                 if use_ai:
+                    # Not let in: answered before the search and the day's count, which it never touches.
+                    if not self.can_read_pages():return self.send(200,{'question':query,'route':'reason','route_reason':why,'sources':[],'answer':None,'ai_used':False,'notice':ASK_CLOSED,'ask_closed':True,'concepts':[],'terms':[],'quota':None})
                     # The page shows only a 해설 now, so when none can be written there is nothing to
                     # search for: the visitor reads why at once instead of after a search.
                     state=self.quota_state() if API_KEY else None
@@ -363,8 +396,8 @@ class Handler(BaseHTTPRequestHandler):
                         else:job_id=start_job(result,query,category,state,self.is_admin(),body.get('job'))
                     finally:
                         if job_id is None:AI_LOCK.release()  # otherwise the job's thread releases it
-                    if job_id:return self.send(200,wait_job(job_id,AI_JOBS[job_id],started+AI_WAIT))
-                return self.send(200,strip_sources(result))
+                    if job_id:return self.send(200,self.view(wait_job(job_id,AI_JOBS[job_id],started+AI_WAIT)))
+                return self.send(200,self.view(strip_sources(result)))
             if path in {'/api/readers','/api/readers/remove'}:
                 if not PUBLIC or not self.is_admin():return self.send(403,{'error':'관리자만 바꿀 수 있습니다.'})
                 if READERS is None:return self.send(503,{'error':'열람 허용 목록을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.'})

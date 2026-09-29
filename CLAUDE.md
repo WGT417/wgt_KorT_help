@@ -135,5 +135,14 @@ Cloud Build가 쓰므로 배포에는 영향이 없다.
   만들면 `Handler.can_read_pages()`를 거치게 한다. 관리자는 `ADMIN_EMAILS`(구글 계정)이고, 저장소가
   공개라 이메일은 코드에 적지 않고 `deploy --admin-email`로 Cloud Run에만 둔다. 허용 목록은 Firestore
   `readers`에 있고 화면의 **열람 허용 관리**(`#admin`)에서 넣고 뺀다.
+- **책 문장 자체(카드의 정의 문장·풀이의 근거 인용·AI 해설의 근거 인용·참고 원문)도 허용한 계정만 받는다**
+  (2026-09-29). 답이나 카드를 보내는 경로는 `Handler.view()`를 거치고, 허용 밖이면 `server.closed_view()`가
+  `quote`·`more`·출처의 본문 필드를 걷고 `quotes_hidden: true`를 붙인다(출처는 남길 키만 고르는 방식이라
+  새 본문 필드가 생겨도 새지 않는다). **Hosting의 카드 파일은 누구나 받으므로 `build_term_cards.py`가
+  `closed_view`를 거친 것만 쓴다.** 허용한 계정의 화면은 카드를 서버(`/api/terms/card`)에서 인용까지 받는다.
+  가려진 자리에는 화면이 양해를 구하는 안내(`closedNotice`)를 띄운다.
+- **AI 해설도 허용한 계정만 쓴다**(2026-09-29). 책마다 내용을 추려 쓰는 요약이라 인용문과 같은 기준이다.
+  `/api/ask`의 해설 요청은 허용 밖이면 검색도 횟수 차감도 하지 않고 `ask_closed`와 안내(`ASK_CLOSED`)만
+  돌려준다. 화면은 질문 창 아래에 같은 안내를 띄우고 ‘해설 받기’를 막는다. 용어 카드는 누구나 쓴다.
 - 확인은 직접 `*.run.app`이 아니라 <https://kor-teacher-help.web.app/api/…>로 한다.
   이 노트북에서 run.app 직접 접속은 TLS가 끊긴다.
