@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 import core,server
-from explanation import validate,collect_evidence
+from explanation import validate,collect_evidence,MAX_PAGES,resolve_evidence,mark_damage,scrub
 
 class ExplanationTests(unittest.TestCase):
     def setUp(self):
@@ -29,7 +29,7 @@ class ExplanationTests(unittest.TestCase):
         initial=core.search_pages('어미의 종류에 대해 설명해줘','문법')
         call=Mock(return_value={'queries':['선어말어미','종결어미','연결어미','전성어미','명사형 어미','관형사형 어미']})
         rows=collect_evidence('어미의 종류','문법',initial,call,'test')
-        self.assertEqual(len({r['id'] for r in rows}),len(rows));self.assertLessEqual(len(rows),28)
+        self.assertEqual(len({r['id'] for r in rows}),len(rows));self.assertLessEqual(len(rows),MAX_PAGES)
         self.assertTrue(all(r['source_id']==f"S{r['id']}" for r in rows))
         text=''.join(core.normalized(r['text']) for r in rows)
         for term in ['선어말어미','종결어미','연결어미','전성어미']:self.assertIn(term,text)
@@ -40,5 +40,48 @@ class ExplanationTests(unittest.TestCase):
             server.openai_call('JSON','test',schema={'type':'object'})
         payload=json.loads(call.call_args.args[0].data)
         self.assertEqual(payload['text']['format']['type'],'json_schema');self.assertTrue(payload['text']['format']['strict'])
+
+class EvidenceResolutionTests(unittest.TestCase):
+    """The model names evidence ids; the server turns them into citations."""
+    QUOTES=['간접 인용절은 원래 발화를 화자의 관점으로 바꾸어 전달하는 절이다.','직접 인용절에는 조사 라고가 붙고 원래 발화의 억양이 유지된다.']
+    def setUp(self):
+        self.source={'source_id':'S1','text':' '.join(self.QUOTES)}
+        self.registry={'S1P1':{'source_id':'S1','quotes':self.QUOTES},'S1P2':{'source_id':'S1','quotes':[]},'K1-1':{'pages':[1,2,3]}}
+    def answer(self,*ids,text='직접 인용절은 라고와 함께 억양을 유지한다.'):
+        return {'title':'인용절','lead':{'text':'결론이다.','citations':[]},'sections':[{'title':'비교','subsections':[],'points':[{'label':'직접 인용','text':text,'examples':[],'citations':[{'evidence_id':i} for i in ids]}]}],'summary':{'columns':[],'rows':[]},'limitations':'','insufficient':False}
+    def test_paragraph_cites_its_closest_clean_sentence(self):
+        cited=resolve_evidence(self.answer('S1P1'),self.registry)['sections'][0]['points'][0]['citations']
+        self.assertEqual(cited,[{'source_id':'S1','quote':self.QUOTES[1]}])
+    def test_paragraph_without_clean_sentence_cites_the_page(self):
+        cited=resolve_evidence(self.answer('S1P2'),self.registry)['sections'][0]['points'][0]['citations']
+        self.assertEqual(cited,[{'source_id':'S1','quote':''}])
+        self.assertEqual(validate(resolve_evidence(self.answer('S1P2'),self.registry),[self.source])['rejected_count'],0)
+    def test_concept_item_cites_the_pages_it_rests_on(self):
+        cited=resolve_evidence(self.answer('K1-1'),self.registry)['sections'][0]['points'][0]['citations']
+        self.assertEqual([c['source_id'] for c in cited],['S1','S2'])
+    def test_unknown_id_rejects_the_claim(self):
+        result=validate(resolve_evidence(self.answer('S1P1','S9P9'),self.registry),[self.source])
+        self.assertEqual(result['sections'],[]);self.assertEqual(result['rejected_count'],1)
+    def test_lead_is_kept_and_meta_sentences_removed(self):
+        answer=self.answer('S1P1',text='직접 인용절은 억양을 유지한다. 제공된 발췌문에서는 해당 문자가 OCR로 명확하게 보존되지 않았다.')
+        result=validate(resolve_evidence(answer,self.registry),[self.source])
+        self.assertEqual(result['lead']['text'],'결론이다.')
+        self.assertEqual(result['sections'][0]['points'][0]['text'],'직접 인용절은 억양을 유지한다.')
+        self.assertEqual(scrub('개론서에서는 다루지 않는다. 깨진 글자는 복원하지 않았다.'),'개론서에서는 다루지 않는다.')
+    def test_damage_is_marked_by_sentence(self):
+        text,damaged=mark_damage('중세 국어의 단모음은 일곱 개였다. 그 가운데 모Ab음은 깨졌다.')
+        self.assertTrue(damaged)
+        self.assertEqual(text,'중세 국어의 단모음은 일곱 개였다. ⟦그 가운데 모Ab음은 깨졌다.⟧')
+
+class QuestionTermsTests(unittest.TestCase):
+    """Every lexical term must appear in a paragraph, so the words that only ask are dropped."""
+    def test_asking_words_are_not_search_terms(self):
+        from retrieval import terms
+        self.assertEqual(terms('소설의 시점에는 어떤 것들이 있나요?'),['소설','시점'])
+        self.assertEqual(terms('음운 변동 중 교체에 해당하는 것을 알려줘'),['음운','변동','교체'])
+        self.assertEqual(terms("중세국어에서 'ㅔ'는 단모음이 아니었지? 그리고 중세국어의 모음조화에 대해 설명해줘"),['중세국어','단모음','모음조화'])
+    def test_names_keep_their_endings(self):
+        from retrieval import terms
+        for name in ['소설가','메타인지','미닫이','어린이','지도','태도']:self.assertEqual(terms(name),[name])
 
 if __name__=='__main__':unittest.main()

@@ -119,8 +119,8 @@ function renderPoints(target,points,sources){
     points.forEach((point,i)=>{
         const item=el('li',undefined,'explanation-point');item.append(el('span',circled[i]||`(${i+1})`,'point-num'));
         if(point.label)item.append(el('p',point.label,'point-label'));
-        item.append(el('p',point.text,'point-text'));
-        if(point.examples?.length){const box=el('div',undefined,'point-examples');box.append(el('span','예','example-tag'));const examples=el('ul',undefined,'example-list');for(const example of point.examples)examples.append(el('li',example));box.append(examples);item.append(box);}
+        const text=el('p',undefined,'point-text');text.append(inlineText(point.text));item.append(text);
+        if(point.examples?.length){const box=el('div',undefined,'point-examples');box.append(el('span','예','example-tag'));const examples=el('ul',undefined,'example-list');for(const example of point.examples){const li=el('li');li.append(inlineText(example));examples.append(li);}box.append(examples);item.append(box);}
         if(point.citations?.length){const refs=el('div',undefined,'point-refs');refs.append(el('span','근거','refs-tag'));appendCitations(refs,point.citations,sources);item.append(refs);}
         list.append(item);
     });
@@ -130,6 +130,8 @@ function renderExplanation(answer,sources){
     const article=el('article',undefined,'explanation');
     const top=el('div',undefined,'explanation-top');top.append(el('span','AI 해설','badge ai-badge'),el('span','개론서 원문을 근거로 작성 · '+(answer.validation||'항목마다 근거 쪽을 표시했습니다.'),'small muted'));
     article.append(top,el('h3',answer.title,'explanation-title'));
+    // The direct answer to the question, before the sections that develop it.
+    if(answer.lead?.text){const lead=el('div',undefined,'explanation-lead');const p=el('p');p.append(inlineText(answer.lead.text));lead.append(p);if(answer.lead.citations?.length)appendCitations(lead,answer.lead.citations,sources);article.append(lead);}
     const sections=answer.sections||[];
     if(sections.length>=3){
         const toc=el('nav',undefined,'explanation-toc');toc.setAttribute('aria-label','해설 차례');toc.append(el('p','차례','toc-label'));
@@ -147,7 +149,7 @@ function renderExplanation(answer,sources){
         const scroll=el('div',undefined,'table-scroll');scroll.tabIndex=0;scroll.setAttribute('role','region');scroll.setAttribute('aria-label','개념 종합 일람표');
         const table=el('table',undefined,'concept-table');table.append(el('caption','분류와 핵심 내용을 한눈에 정리했습니다. 출처를 누르면 해당 근거를 확인할 수 있습니다.'));
         const head=el('thead'),tr=el('tr');for(const label of [...answer.summary.columns,'출처']){const th=el('th',label);th.scope='col';tr.append(th);}head.append(tr);table.append(head);
-        const body=el('tbody');for(const row of answer.summary.rows){const tr=el('tr');row.cells.forEach((cell,i)=>{const td=el(i===0?'th':'td',cell);if(i===0)td.scope='row';tr.append(td);});const refs=el('td');appendCitations(refs,row.citations,sources);tr.append(refs);body.append(tr);}table.append(body);scroll.append(table);section.append(scroll);article.append(section);
+        const body=el('tbody');for(const row of answer.summary.rows){const tr=el('tr');row.cells.forEach((cell,i)=>{const td=el(i===0?'th':'td');td.append(inlineText(cell));if(i===0)td.scope='row';tr.append(td);});const refs=el('td');appendCitations(refs,row.citations,sources);tr.append(refs);body.append(tr);}table.append(body);scroll.append(table);section.append(scroll);article.append(section);
     }
     if(answer.limitations)article.append(el('p',answer.limitations,'notice'));
     if(answer.rejected_count)article.append(el('p','원문 인용을 확인하지 못한 설명 일부를 제외했습니다. 이 답변은 불완전할 수 있습니다.','notice'));
@@ -327,7 +329,7 @@ async function ask(question,category,mode,resume=null){
     const button=$('#ask-button');
     $('#answer').replaceChildren();$('#concepts').replaceChildren();$('#sources').replaceChildren();$('#results').hidden=true;
     button.disabled=true;button.textContent='해설 쓰는 중…';$('#results').setAttribute('aria-busy','true');
-    notice(resume?'새로고침 전에 요청한 해설을 이어서 받고 있습니다.':'여러 개론서의 근거를 모아 해설을 작성하고 있습니다. 1분 남짓 걸릴 수 있습니다.');
+    notice(resume?'새로고침 전에 요청한 해설을 이어서 받고 있습니다.':'여러 개론서의 근거를 모아 해설을 작성하고 있습니다. 1~2분 걸릴 수 있습니다.');
     const entry=resume||{question,category,mode,started:Date.now(),pending:true};
     if(mode==='reason'&&!entry.job)entry.job=newJobId();
     saveAsk(entry);

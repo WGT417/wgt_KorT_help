@@ -4,7 +4,7 @@ import re
 from collections import Counter
 
 STOP = set('무엇 어떻게 무엇인가 무엇인가요 알려줘 알려주세요 설명 설명해 설명해줘 찾아줘 찾아주세요 대해 대한 관해 관한 좀 해줘 주세요 차이 차이는 비교 예시 인가 인가요 것인가 것일까 있나요 읽는'.split())
-INTENT = {'종류','분류','체계','정의','개념','특징','특성','기능','의미','예','예시'}
+INTENT = {'종류','분류','체계','정의','개념','특징','특성','기능','의미','예','예시','방법','원리','이유','사례','예문'}
 # Domain equivalents, not generated answers. Keep this small and inspectable.
 ALIASES = [('작문', '쓰기', '글쓰기'), ('독서', '읽기'), ('퇴고', '고쳐쓰기', '수정하기'), ('내용생성', '내용창안'), ('내용조직', '내용구성'), ('자유간접화법','자유간접문체'),
     # School-grammar names beside the names the 개론서 use.
@@ -23,12 +23,39 @@ def compound_keys():
 PARTICLE_RE=re.compile(r'(에대해서|에관해서|에서는|인가요|인가|에게|에서|으로|이란|이랑|에는|에도|은|는|을|를|의|과|와|에)$')
 def strip_particle(token):return PARTICLE_RE.sub('',token) if len(token)>2 else token
 
+# Words that ask rather than name: question words, connectives and the question's
+# own predicates. Every lexical term must appear in the paragraph, so left in,
+# 해당하 (…에 해당하는 것), 것들이 (어떤 것들이 있나요) and 아니었지 decided the search;
+# asked that way, 7 of 300 concept questions lost every page their name finds.
+ASKING=set('어떤 어떠한 어느 무슨 왜 언제 그리고 그러면 그럼 또 또는 혹은 및 것 것들 것은 것이 것을 것들이 것들은 해당 해당하 해당되 다른 같은 뭐 뭐야 뭐지 뭔가 뭔지 들어줘 알려 정리 정리해 정리해줘 말해 말해줘 가르쳐 가르쳐줘 궁금 궁금해 차이점 공통점 맞아 맞나 맞지 아닌가 아니지 아니야'.split())
+PREDICATE=re.compile(r'^(?:있|없|하|했|되|됐|아니|맞|같|다르|달라)[가-힣]{0,3}(?:나요|니까|까요|지요|죠|었지|았지|였지|었나|았나|는가|나|지|요)$')
+# A copula or subject marker left on a term (연어이 뭐야, 인용절인지): stripped only
+# when what remains is a term the books index and the whole word is not, so
+# 소설가, 메타인지 and 미닫이 stay whole.
+TAIL_RE=re.compile(r'(?:이었|였)?(?:인가요|인지|일까요|일까|이야|이지|이죠|이에요|예요|입니까|이었지|였지)$|(?<=[가-힣]{2})[이가]$')
+_known={}
+def known_terms():
+    """Index terms, alias groups and the names of the concept entries."""
+    if 'keys' not in _known:
+        keys=set(compound_keys())
+        try:
+            from concepts import all_concepts
+            for entry in all_concepts():keys.update(entry['_terms'])
+        except Exception:pass
+        _known['keys']=keys
+    return _known['keys']
+
 def terms(query):
     result=[]
     for token in re.findall(r'[가-힣A-Za-z0-9]+',query.lower()):
-        if token in STOP: continue
+        if token in STOP or token in ASKING or PREDICATE.match(token): continue
         token=strip_particle(token)
-        if len(token)>=2 and token not in STOP: result.append(token)
+        # 예시도 들어줘, 구별하는 법: the request word with 도, a verb stem with 하.
+        if token.endswith('도') and (token[:-1] in INTENT or token[:-1] in STOP):continue
+        stem=TAIL_RE.sub('',token)
+        if stem!=token and len(stem)>=2 and token not in known_terms() and stem in known_terms():token=stem
+        if len(token)>=3 and token.endswith('하') and token not in known_terms():token=token[:-1]
+        if len(token)>=2 and token not in STOP and token not in ASKING: result.append(token)
     return list(dict.fromkeys(result))[:12]
 
 def groups_for(query):

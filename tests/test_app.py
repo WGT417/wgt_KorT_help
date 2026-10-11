@@ -381,7 +381,7 @@ class PublicModeTests(unittest.TestCase):
     def setUp(self):
         import quota, access
         patches=[patch.object(server,'PUBLIC',True),patch.object(server,'ADMIN_TOKEN','test-admin-token'),patch.object(server,'QUOTA',quota.MemoryQuota()),
-                 patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key:s),patch.object(server,'reason',return_value={'title':'mock'}),
+                 patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key,concepts=():s),patch.object(server,'reason',return_value={'title':'mock'}),
                  patch.object(quota,'LIMIT',3),patch.object(server,'READERS',access.MemoryReaders()),patch.object(server,'ADMIN_EMAILS',{'admin@example.com'}),
                  patch.object(access,'verify_token',lambda token:self.ACCOUNTS.get(token,''))]
         for p in patches:p.start();self.addCleanup(p.stop)
@@ -512,7 +512,7 @@ class PublicModeTests(unittest.TestCase):
         self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('실패',data['notice'])
     def test_slow_generation_hands_back_a_job_and_finishes_on_poll(self):
         # Firebase Hosting drops a request at 60s, so past AI_WAIT the page gets a job id and asks again.
-        def slow(query,sources):time.sleep(2.5);return {'title':'slow mock'}
+        def slow(query,sources,concepts=()):time.sleep(2.5);return {'title':'slow mock'}
         with patch.object(server,'AI_WAIT',0),patch.object(server,'reason',side_effect=slow):
             first=self.ask()
             self.assertIn('pending',first);self.assertEqual(first['question'],'피동과 사동의 차이');self.assertNotIn('answer',first)
@@ -526,7 +526,7 @@ class PublicModeTests(unittest.TestCase):
         self.assertEqual(e.exception.code,404)
     def test_page_named_job_can_be_asked_for_after_a_reload(self):
         # The page picks the job id before sending, so a reload inside the first AI_WAIT still finds the answer.
-        def slow(query,sources):time.sleep(1.5);return {'title':'slow mock'}
+        def slow(query,sources,concepts=()):time.sleep(1.5);return {'title':'slow mock'}
         def start(job):
             with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'reason','job':job},{'X-Admin-Token':'test-admin-token'}) as r:first=json.load(r)  # more asks than the day's 3
             for _ in range(10):

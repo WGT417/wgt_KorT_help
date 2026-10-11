@@ -4,7 +4,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import os, json, re, threading, secrets, mimetypes, time, subprocess, gzip
 from core import ROOT, DATA, connect, init_db, search_pages, route_question, pymupdf, normalized, quality, ocr_page
-from explanation import collect_evidence, prompt_for, validate, ANSWER_SCHEMA,MODEL_ANSWER_SCHEMA,evidence_packet,resolve_evidence
+from explanation import collect_evidence, prompt_for, validate, ANSWER_SCHEMA,MODEL_ANSWER_SCHEMA,evidence_packet,resolve_evidence,add_cited_pages
 import quota, access
 
 # PUBLIC=1 is set in the Dockerfile: bind all interfaces, trust the platform's
@@ -24,7 +24,13 @@ if not PUBLIC:
             name,value=line.split('=',1)
             if name.strip() == 'OPENAI_API_KEY':os.environ.setdefault(name.strip(),value.strip().strip('"').strip("'"))
 API_KEY=os.environ.get('OPENAI_API_KEY','')
+# The search plan is a list of keywords: the nano tier does it. The 해설 is where the
+# model shows. On the same evidence (2026-10-11) luna, the nano tier, wrote 하향 이중
+# 모음 /əy/ as "/y/ 뒤에 /ə/", dropped the books' proofs and listed classes without
+# their members; sol, the flagship, did none of that. About $0.02 against $0.25 an answer.
 MODEL='gpt-5.6-luna'
+ANSWER_MODEL=os.environ.get('ANSWER_MODEL','gpt-5.6-sol')
+ANSWER_EFFORT=os.environ.get('ANSWER_EFFORT','high')
 CSRF=secrets.token_urlsafe(32)
 AI_LOCK=threading.Lock()
 OCR_LOCK=threading.Lock()
@@ -62,15 +68,15 @@ def restrict_secret_file(path):
         except (OSError,subprocess.SubprocessError) as error:raise OSError('키 파일 권한을 제한할 수 없습니다.') from error
     else:os.chmod(path,0o600)
 
-def openai_call(prompt,key,*,schema=None,max_tokens=16000):
+def openai_call(prompt,key,*,schema=None,max_tokens=16000,effort='medium',model=None):
     format={'type':'json_schema','name':'library_response','schema':schema,'strict':True} if schema else {'type':'json_object'}
-    payload={'model':MODEL,'input':prompt,'reasoning':{'effort':'medium'},'max_output_tokens':max_tokens,'text':{'format':format},'store':False}
+    payload={'model':model or MODEL,'input':prompt,'reasoning':{'effort':effort},'max_output_tokens':max_tokens,'text':{'format':format},'store':False}
     request=Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','Authorization':f'Bearer {key}'},method='POST')
     try:
-        with urlopen(request,timeout=180) as response: result=json.load(response)
+        with urlopen(request,timeout=300) as response: result=json.load(response)
     except HTTPError as error:
         code=error.code
-        raise ValueError({400:'모델 또는 요청 설정을 확인해 주세요.',401:'OpenAI API 키 인증에 실패했습니다.',403:'OpenAI API 키의 사용 권한을 확인해 주세요.',404:'GPT-5.6 Luna 모델 접근 권한을 확인해 주세요.',429:'OpenAI API 잔액 또는 요청 한도를 확인해 주세요.'}.get(code,'OpenAI API가 응답하지 못했습니다. 잠시 후 다시 시도해 주세요.')) from None
+        raise ValueError({400:'모델 또는 요청 설정을 확인해 주세요.',401:'OpenAI API 키 인증에 실패했습니다.',403:'OpenAI API 키의 사용 권한을 확인해 주세요.',404:f'{model or MODEL} 모델 접근 권한을 확인해 주세요.',429:'OpenAI API 잔액 또는 요청 한도를 확인해 주세요.'}.get(code,'OpenAI API가 응답하지 못했습니다. 잠시 후 다시 시도해 주세요.')) from None
     except (URLError,TimeoutError):raise ValueError('OpenAI 연결 시간이 초과되었거나 네트워크에 연결할 수 없습니다.') from None
     except ValueError:raise ValueError('OpenAI 응답을 읽을 수 없습니다. 잠시 후 다시 시도해 주세요.') from None
     try:
@@ -79,10 +85,11 @@ def openai_call(prompt,key,*,schema=None,max_tokens=16000):
         return json.loads(raw)
     except (KeyError,IndexError,ValueError,TypeError,AttributeError):raise ValueError('OpenAI 해설을 완성하지 못했거나 응답 형식이 올바르지 않습니다. 잠시 후 다시 시도해 주세요.') from None
 
-def reason(query,sources):
-    packet,registry=evidence_packet(sources)
-    answer=openai_call(prompt_for(query,sources,packet),API_KEY,schema=MODEL_ANSWER_SCHEMA)
-    return validate(resolve_evidence(answer,registry),sources)
+def reason(query,sources,concepts=()):
+    packet,registry=evidence_packet(sources,concepts)
+    answer=resolve_evidence(openai_call(prompt_for(query,sources,packet),API_KEY,schema=MODEL_ANSWER_SCHEMA,max_tokens=40000,effort=ANSWER_EFFORT,model=ANSWER_MODEL),registry)
+    add_cited_pages(answer,sources)
+    return validate(answer,sources)
 
 # Firebase Hosting cuts a proxied request at 60s, and an AI 해설 often takes
 # 45–70s. The answer is generated in a thread; a request waits at most AI_WAIT
@@ -138,9 +145,15 @@ def closed_view(result):
 def generate(job,query,category,state,admin):
     result=job['result']
     try:
-        sources=collect_evidence(query,category,result['sources'],openai_call,API_KEY)
+        # The concept entries the question names are verified notes on the books, with
+        # the old letters and jamo intact: the 해설 reads them first.
+        concepts=result.get('concepts') or []
+        sources=collect_evidence(query,category,result['sources'],openai_call,API_KEY,concepts)
         result['sources']=sources
-        result['answer']=reason(query,sources);result['ai_used']=True
+        result['answer']=reason(query,sources,concepts);result['ai_used']=True
+        answer=result['answer']
+        if answer.get('insufficient') and category!='전체':
+            answer['limitations']=(answer.get('limitations','')+' 검색 영역을 ‘전체’로 바꾸면 다른 영역의 개론서까지 함께 찾아봅니다.').strip()
     except Exception as error:
         if not isinstance(error,ValueError):print(f'AI 해설 실패: {error!r}',flush=True)
         result['notice']=str(error) if isinstance(error,ValueError) else '해설을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.'
@@ -306,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
                     init_passages(db)
                     reading_pages=db.execute('SELECT COUNT(*) FROM text_build WHERE version=?',(VERSION,)).fetchone()[0]
                     passage_count=db.execute("SELECT COUNT(*) FROM passages WHERE kind='body'").fetchone()[0]
-                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists(),'public':PUBLIC,'admin':self.is_admin(),'user':self.user_state(),'whole_pages':self.can_read_pages(),'quota':self.quota_state(),'semantic_search':semantic_ready()})
+                return self.send(200,{'books':books,'quality':counts,'verified_pages':verified,'reading_pages':reading_pages,'passage_count':passage_count,'ocr':json.loads(ocr[0]) if ocr else None,'key_configured':bool(API_KEY),'model':ANSWER_MODEL,'csrf':CSRF,'ocr_available':(DATA/'tessdata'/'kor.traineddata').exists(),'public':PUBLIC,'admin':self.is_admin(),'user':self.user_state(),'whole_pages':self.can_read_pages(),'quota':self.quota_state(),'semantic_search':semantic_ready()})
             match=re.fullmatch(r'/api/pages/(\d+)',path)
             if match:
                 with connect() as db:row=db.execute('SELECT p.*,b.title FROM pages p JOIN books b ON p.book_id=b.id WHERE p.id=?',(int(match[1]),)).fetchone()

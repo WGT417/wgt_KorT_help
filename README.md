@@ -1,6 +1,6 @@
 # 국어의 근거
 
-국어 교사가 문식성·문법·문학 개론서에서 근거를 찾고, 필요할 때 OpenAI GPT-5.6 Luna로 설명과 책별 비교를 생성하는 로컬 PWA입니다.
+국어 교사가 문식성·문법·문학 개론서에서 근거를 찾고, 필요할 때 OpenAI GPT-5.6 Sol로 설명과 책별 비교를 생성하는 로컬 PWA입니다.
 
 ## 실행
 
@@ -192,5 +192,5 @@ python -m unittest discover -s tests -v
 - [KRDS 디자인 스타일](https://www.krds.go.kr/html/site/style/style_01.html)
 - [KRDS 색상](https://www.krds.go.kr/html/site/style/style_02.html)
 - [OpenAI API 안내](https://developers.openai.com/api/docs/quickstart)
-- [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna)
+- [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol) (해설), [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) (검색 계획)
 - [PyMuPDF OCR](https://pymupdf.readthedocs.io/en/latest/recipes-ocr.html)
