@@ -84,4 +84,18 @@ class QuestionTermsTests(unittest.TestCase):
         from retrieval import terms
         for name in ['소설가','메타인지','미닫이','어린이','지도','태도']:self.assertEqual(terms(name),[name])
 
+class ConceptPagesTests(unittest.TestCase):
+    """A concept entry's pages lead the evidence, unless the entry is about the other genre."""
+    def test_genre_of_the_question(self):
+        from explanation import asked_genre
+        for q,genre in [('1930년대 모더니즘 시의 특징과 대표 시인은?','poem'),('시조와 가사는 어떻게 다른가요?','poem'),('소설의 시점에는 어떤 것들이 있나요?','novel'),('시점이란',None),('시와 소설의 차이',None)]:
+            self.assertEqual(asked_genre(q),genre,q)
+    def test_entry_about_the_novel_does_not_lead_a_poem_question(self):
+        from explanation import concept_pages
+        from concepts import match_concepts
+        q='1930년대 모더니즘 시의 특징과 대표 시인은?'
+        self.assertEqual(concept_pages(q,match_concepts(q,'문학')),[])
+        q='모더니즘 소설의 특징'
+        self.assertTrue(concept_pages(q,match_concepts(q,'문학')))
+
 if __name__=='__main__':unittest.main()

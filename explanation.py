@@ -102,13 +102,24 @@ def concept_items(entry):
             out.append((section.get('heading',''),item.get('label','') if isinstance(item,dict) else '',text,pages))
     return out
 
+# '1930년대 모더니즘 시' named 리얼리즘·모더니즘·포스트모더니즘 소설 by its alias 모더니즘
+# (2026-10-27): that entry's pages on the novel took ten of the 32 places, the 해설 never read
+# 한국문학강의 383–384쪽 on 이상, and it called him a poet to add on at the end. An entry
+# about the other genre still reaches the model as background; its pages do not lead.
+POEM=re.compile(r'(?<![가-힣])(?:현대|서정)?시(?:인|어|적|집|조|가)?(?:은|는|이|가|을|를|의|에|와|과|도|에서|으로)?(?![가-힣])')
+GENRES={'시':'poem','고전시가':'poem','소설':'novel','고전소설':'novel'}
+def asked_genre(query):
+    poem=bool(POEM.search(query));novel='소설' in query
+    return 'poem' if poem and not novel else 'novel' if novel and not poem else None
+
 def concept_pages(query,concepts,limit=12):
     """Book pages the matched concept entries rest on, the items that share the
     question's words first. Verified pages, and often the very ones search ranks
     low because their glyphs are damaged."""
     from retrieval import groups_for
-    groups=groups_for(query);scored=[]
+    groups=groups_for(query);genre=asked_genre(query);scored=[]
     for rank,entry in enumerate(concepts):
+        if genre and GENRES.get(entry.get('parent'),genre)!=genre:continue
         for order,(heading,label,text,pages) in enumerate(concept_items(entry)):
             c=normalized(heading+label+text)
             hits=sum(any(normalized(t) in c for t in g) for g in groups)
@@ -291,7 +302,7 @@ def prompt_for(query,sources,packet=None):
    - point.text는 2~5문장의 이어지는 설명입니다. 한 문장짜리 요약을 늘어놓지 마세요.
 4. 근거의 예문·용례를 적극적으로 옮기세요. 각 point를 쓸 때 그 설명에 해당하는 예문·단어·어미·작품·구절을 근거에서 찾아 examples에 2~6개 넣습니다(예: 졸졸, 활활 / 줄줄, 훨훨; 알+아서→[아라서]; 비예, 시내예). 본문이 "(23)은 …의 예이다"처럼 번호로 예문을 가리키면 그 번호의 예문 줄을 찾아 실제 형태를 옮기세요. '양성 모음만 쓰인 의성어', '설축 계열'처럼 범주를 설명하는 말은 예가 아닙니다. 근거에 실제 형태가 없을 때만 빈 배열로 둡니다. 책이 틀린 문장·부적절한 표현의 예로 든 것은 앞에 *를 붙여(예: *나는 옛날에 고생을 많이 하셨다) 바른 예와 구별하세요.
 5. 책마다 용어·분류·견해가 다르면 하나로 합치지 말고 어느 책의 관점인지 책 이름을 주어로 밝혀 나란히 설명하세요. 학교 문법과 개론서의 체계, 현대 국어와 중세 국어를 섞지 말고, 역사적 형태는 시기를 밝히세요. 현대 국어 질문에 역사적 내용은 필요할 때만 씁니다.
-6. 근거로 확인되는 내용만 씁니다. 근거에 없는 사실·용례·학자·출처를 지어내지 마세요. 질문이 물은 것 가운데 근거에서 확인하지 못해 답하지 못한 부분이 있을 때만 limitations에 "이번에 찾은 개론서 쪽에서는 …에 대한 설명을 확인하지 못했다"처럼 짧게 적고 insufficient=true로 합니다. 찾은 쪽에 없다고 해서 개론서 전체가 다루지 않는다고 단정하지 마세요. 질문에 다 답했으면 limitations는 빈 문자열로 둡니다. 묻지 않은 범위가 개론서에 없다는 말은 쓰지 마세요.
+6. 근거로 확인되는 내용만 씁니다. 근거에 없는 사실·용례·학자·출처를 지어내지 마세요. 근거가 나란히 든 인물·작품·견해를 핵심과 주변으로 나누거나, '답안에서는 …가 안전하다'처럼 근거에 없는 평가·위계·요령을 덧붙이지도 마세요. 질문이 물은 것 가운데 근거에서 확인하지 못해 답하지 못한 부분이 있을 때만 limitations에 "이번에 찾은 개론서 쪽에서는 …에 대한 설명을 확인하지 못했다"처럼 짧게 적고 insufficient=true로 합니다. 찾은 쪽에 없다고 해서 개론서 전체가 다루지 않는다고 단정하지 마세요. 질문에 다 답했으면 limitations는 빈 문자열로 둡니다. 묻지 않은 범위가 개론서에 없다는 말은 쓰지 마세요.
 7. 독자에게 작업 과정을 말하지 마세요. '제공된 자료', '발췌', '근거 자료', 'OCR', '판독', '글자가 깨져' 같은 말은 lead·본문·표·limitations 어디에도 쓰지 않습니다.
 8. lead, 모든 point, 표의 모든 행에 그 내용을 뒷받침하는 evidence id 1~4개(concepts 항목 id 또는 단락 id)를 citations로 붙이세요. 입력에 있는 id만 씁니다. 쪽수는 화면이 붙이므로 본문에 쓰지 마세요.
 9. summary는 분류·비교·여러 항목을 정리하는 질문일 때 3~5열 표로 만듭니다(첫 열은 항목 이름, rows의 cells 개수는 columns 개수와 같게). 임용·수업에 쓸 만한 구별점이 근거에서 나오면 마지막 열 '임용·수업 포인트'에 한 문장으로 적습니다. 표가 도움이 되지 않는 질문이면 columns와 rows를 빈 배열로 두세요.
