@@ -494,7 +494,7 @@ function termTile(t){
     tile.onpointerenter=()=>{resting=setTimeout(prefetch,120);};tile.onpointerleave=()=>clearTimeout(resting);tile.onpointerdown=prefetch;
     tile.onclick=()=>openTermCard(t);return tile;
 }
-function renderTermsView(){
+function renderTermsView(from=0){
     const {items,scope,area}=termsState;if(!items)return;
     const q=termKey(termsState.query);
     const base=items.filter(t=>(!area||t.areas&area)&&(!q||t.compact.includes(q)));
@@ -514,8 +514,10 @@ function renderTermsView(){
     if(termsState.query.trim())where.push(`'${termsState.query.trim()}' 포함`);
     $('#terms-count').textContent=`${where.join(' · ')} ${number(list.length)}개`;
     const grid=$('#terms-grid'),frag=document.createDocumentFragment();
-    for(const t of list.slice(0,termsState.shown))frag.append(termTile(t));
-    grid.replaceChildren(frag);
+    for(const t of list.slice(from,termsState.shown))frag.append(termTile(t));
+    // 더 보기 adds after the tiles already shown, so those in view stay put and the keyboard goes on from the first new tile.
+    const first=frag.firstChild;
+    if(from){grid.append(frag);first?.focus({preventScroll:true});}else grid.replaceChildren(frag);
     if(!list.length)grid.append(el('p',scope&&q?'이 조건에는 없습니다. 보기를 ‘모든 용어’로 넓혀 보세요.':'조건에 맞는 용어가 없습니다. 검색어를 줄이거나 영역을 넓혀 보세요.','notice'));
     const more=$('#terms-more'),left=list.length-termsState.shown;
     more.hidden=left<=0;more.textContent=`더 보기 (남은 ${number(left)}개)`;
@@ -563,7 +565,7 @@ function showView(name,push=true){
     if(name==='search')return;
     window.scrollTo(0,0);
     if(name==='admin')return loadReaders();
-    loadTerms().then(renderTermsView).catch(error=>{$('#terms-count').textContent=error.message;});
+    loadTerms().then(()=>renderTermsView()).catch(error=>{$('#terms-count').textContent=error.message;});
 }
 window.addEventListener('popstate',()=>showView(viewOfHash(),false));
 // The back button can bring back the page as it was left (bfcache), so the time left alone is checked then too.
@@ -572,7 +574,7 @@ let termsTyping=null;
 $('#terms-filter').addEventListener('input',event=>{clearTimeout(termsTyping);termsTyping=setTimeout(()=>{termsState.query=event.target.value;termsState.initial='';termsState.shown=PAGE;renderTermsView();},120);});
 document.querySelectorAll('#terms-scope button').forEach(b=>b.onclick=()=>{termsState.scope=Number(b.dataset.scope);termsState.shown=PAGE;renderTermsView();});
 document.querySelectorAll('#terms-area button').forEach(b=>b.onclick=()=>{termsState.area=Number(b.dataset.area);termsState.shown=PAGE;renderTermsView();});
-$('#terms-more').onclick=()=>{termsState.shown+=PAGE;renderTermsView();};
+$('#terms-more').onclick=()=>{const from=termsState.shown;termsState.shown+=PAGE;renderTermsView(from);};
 window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPrompt=event;$('#install').hidden=false;});$('#install').onclick=async()=>{if(installPrompt){await installPrompt.prompt();installPrompt=null;$('#install').hidden=true;}};
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 window.addEventListener('offline',()=>notice('오프라인입니다. AI 해설은 서버에 다시 연결된 뒤 사용할 수 있습니다.'));

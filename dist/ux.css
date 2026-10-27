@@ -128,6 +128,8 @@ table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-he
 .term-tile-tags .term-tag{margin:0}
 .term-tag.concept{color:#164780;background:#e8f1fd}
 .terms-more{display:block;margin:18px auto 8px;min-width:220px}
+/* The sidebar stretches as tall as the list, so its last line sits at the page's foot; Chrome held the view on that line and 더 보기 leapt to the new end. */
+.sidebar{overflow-anchor:none}
 #term-dialog{width:min(920px,calc(100vw - 28px))}
 #term-dialog-body .concept-card:last-child{margin-bottom:0}
 #term-dialog .dialog-actions{margin-top:16px}
