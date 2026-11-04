@@ -98,4 +98,41 @@ class ConceptPagesTests(unittest.TestCase):
         q='모더니즘 소설의 특징'
         self.assertTrue(concept_pages(q,match_concepts(q,'문학')))
 
+class QuotedExampleTests(unittest.TestCase):
+    """The question the site answered with nothing and Gemini's notebook answered (2026-11-04)."""
+    QUESTION="'두 사람이 손을 잡고 걷는다.'는 종속적으로 이어진 문장인가?"
+    def page(self,pdf_page):
+        with core.connect() as db:
+            return db.execute("SELECT p.id FROM pages p JOIN books b ON b.id=p.book_id WHERE b.title='한국어표준문법' AND p.pdf_page=?",(pdf_page,)).fetchone()['id']
+    def test_the_quoted_example_does_not_empty_the_search(self):
+        from retrieval import fallback_queries
+        self.assertEqual(fallback_queries(self.QUESTION)[0].split(),['는','종속적으로','이어진','문장인가?'])
+        # A quoted single word may be the term asked about: it stays while the sentence goes.
+        self.assertIn("'잡고'",fallback_queries("'잡고'는 '두 사람이 손을 잡고 걷는다.'에서 어떤 어미인가?")[0])
+        rows=core.search_pages(self.QUESTION,'문법')
+        self.assertTrue(rows);self.assertTrue(all('종속' in core.normalized(r['display_excerpt']) for r in rows[:3]))
+    def test_evidence_spans_the_books_and_takes_the_page_of_examples(self):
+        from collections import Counter
+        from concepts import match_concepts
+        from term_index import match_terms
+        q=self.QUESTION;terms=match_terms(q,'문법');concepts=server.rank_concepts(match_concepts(q,'문법'),terms)
+        rows=collect_evidence(q,'문법',[],lambda *a,**k:{'queries':[]},'test',concepts,terms)
+        books=Counter(r['title'] for r in rows)
+        self.assertGreaterEqual(len(books),3);self.assertLessEqual(max(books.values()),len(rows)*.6)
+        # 442쪽 prints the (12) examples that 443쪽 explains.
+        self.assertTrue({self.page(477),self.page(478)}<={r['id'] for r in rows})
+        # The index points to 한국어문법총론 1 269–270쪽 for this term.
+        self.assertIn('한국어문법총론 1',books)
+
+class VolumeTests(unittest.TestCase):
+    def test_a_volume_the_library_lacks_rejects_the_point(self):
+        # Gemini's notebook cited 한국어표준문법's sentence as 『한국어 문법총론 2』.
+        source={'source_id':'S1','text':'원문에 실제로 있는 인용문입니다. 충분히 길게 작성하여 대조합니다.'}
+        for text,kept in [('『한국어 문법총론 2』는 이를 종속적 연결어미로 본다.',False),('〈한국어 문법총론 Ⅱ〉의 설명',False),('문학교육개론 3권에서',False),
+                          ('〈한국어문법총론 1〉은 의존 형용사로 본다.',True),('현대시교육론 2와 현대시교육론의 관점',True),('〈우리말문법론〉 2장의 설명',True),('예문 (12)에서 ‘-고’는',True)]:
+            with self.subTest(text=text):
+                point={'label':'견해','text':text,'examples':[],'citations':[{'source_id':'S1','quote':''}]}
+                result=validate({'title':'t','sections':[{'title':'s','points':[point],'subsections':[]}],'summary':{'columns':[],'rows':[]},'limitations':'','insufficient':False},[source])
+                self.assertEqual(bool(result['sections']),kept);self.assertEqual(result['rejected_count'],0 if kept else 1)
+
 if __name__=='__main__':unittest.main()

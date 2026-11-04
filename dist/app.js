@@ -273,9 +273,10 @@ function renderTerms(terms,target=$('#concepts')){
 function renderResults(data,restoring=false){
     $('#welcome').hidden=true;$('#results').hidden=false;
     renderConcepts(data.concepts);renderTerms(data.terms);
-    $('#result-title').textContent=data.question;$('#route-badge').textContent='개론서 근거 기반 해설';
+    $('#result-title').textContent=data.question;$('#route-badge').textContent=data.answer?'개론서 근거 기반 해설':'용어 카드와 개념 정리';
     const hidden=Boolean(data.quotes_hidden);
-    $('#route-reason').textContent=hidden?'각 설명마다 근거가 실린 책과 쪽을 표시했습니다. 인용한 원문은 열람을 허락받은 계정에만 보입니다.':'각 설명의 출처를 누르면 인용한 원문을 확인할 수 있습니다.';notice(data.notice);
+    $('#route-reason').textContent=!data.answer?'해설은 쓰지 못했지만, 질문에 나온 용어의 카드와 개념 정리를 아래에 모았습니다.':hidden?'각 설명마다 근거가 실린 책과 쪽을 표시했습니다. 인용한 원문은 열람을 허락받은 계정에만 보입니다.':'각 설명의 출처를 누르면 인용한 원문을 확인할 수 있습니다.';notice(data.notice);
+    $('#source-details').hidden=!data.sources.length;
     if(data.quota&&!restoring)showQuota(data.quota);  // a saved count is stale; loadStatus shows today's
     const answer=$('#answer');answer.replaceChildren();
     if(data.answer)answer.append(renderExplanation(data.answer,data.sources));
@@ -344,7 +345,8 @@ async function ask(question,category,mode,resume=null){
         if(data.question!==question)throw new Error('질문과 응답이 일치하지 않아 표시하지 않았습니다. 다시 질문해 주세요.');
         // No 해설 (the day's count used up, no key, nothing found, generation failed): the page shows why and nothing else.
         if(data.ask_closed)loadStatus();  // the page thought this account was let in; show the notice under the form
-        if(!data.ai_used){if(data.quota)showQuota(data.quota);notice(data.notice||'해설을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.');saveAsk({question,category,mode});return;}
+        // The term cards and concept entries the question named still answer part of it.
+        if(!data.ai_used){if(data.quota)showQuota(data.quota);if(data.terms?.length||data.concepts?.length)renderResults({...data,sources:[],answer:null});notice(data.notice||'해설을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.');saveAsk({question,category,mode});return;}
         renderResults(data);saveAsk({question,category,mode,job:entry.job,started:entry.started,data});
     }catch(error){
         notice(error.message,true);

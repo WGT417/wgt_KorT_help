@@ -1,0 +1,29 @@
+{
+  "about": "AI 해설 근거 평가용 임용형 질문. 예문을 따옴표로 든 판별형, 두 개념 비교, 지도 방법을 섞었다. 키는 질문, 값은 [검색 영역, 정답 쪽을 읽을 개념 id]. 정답 쪽은 concepts/*.json의 verified sources이며 앞뒤 한 쪽까지 맞은 것으로 센다.",
+  "questions": {
+    "'두 사람이 손을 잡고 걷는다.'는 종속적으로 이어진 문장인가?": ["문법", "sentence-structure/connected"],
+    "'철수가 영희에게 책을 주었다'에서 서술어의 자릿수는 몇 자리인가?": ["문법", "sentence-structure/predicate-valency"],
+    "'솜이불'을 [솜니불]로 발음하는 것은 어떤 음운 변동인가?": ["문법", "phonological-change/insertion"],
+    "'국물'이 [궁물]로 발음되는 이유를 설명해 줘": ["문법", "phonological-change/assimilation"],
+    "'할머니께서 진지를 잡수신다'에 쓰인 높임 표현을 분석해 줘": ["문법", "grammar-elements/honorifics"],
+    "'문이 바람에 열렸다'는 피동문인가?": ["문법", "grammar-elements/passive-causative"],
+    "'이다'는 조사인가 형용사인가?": ["문법", "parts-of-speech/copula"],
+    "'나는 그가 범인임을 알았다'는 어떤 절을 안은 문장인가?": ["문법", "sentence-structure/embedded"],
+    "'철수는 영희가 왔다고 말했다'의 인용절은 직접 인용인가 간접 인용인가?": ["문법", "grammar-elements/quotation"],
+    "'안 먹었다'와 '못 먹었다'는 의미가 어떻게 다른가?": ["문법", "grammar-elements/negation"],
+    "'밤낮'과 '덮밥'은 어떤 합성어인가?": ["문법", "morpheme-word/compound"],
+    "글을 읽을 때 독자의 배경지식은 어떤 역할을 하나?": ["문식성", "reading-process/schema"],
+    "읽기 과정의 상향식 모형과 하향식 모형은 어떻게 다른가?": ["문식성", "reading-process/models"],
+    "학생이 자기 읽기를 점검하고 조절하도록 하려면 어떻게 지도해야 하나?": ["문식성", "reading-process/metacognition"],
+    "토의와 토론은 무엇이 다른가?": ["문식성", "speaking-discourse/discussion-vs-debate"],
+    "'지금 몇 시예요?'라는 물음에 '방금 버스가 지나갔어요'라고 답하면 어떤 함축이 생기나?": ["문식성", "speaking-principles/cooperative-principle"],
+    "학생의 고쳐쓰기는 어떻게 지도해야 하나?": ["문식성", "writing-process/revising"],
+    "사고구술은 작문 연구와 교육에서 어떻게 쓰이나?": ["문식성", "writing-research/think-aloud"],
+    "'내 마음은 호수요'는 어떤 비유인가?": ["문학", "poetry/figurative-language"],
+    "소설에서 서술자와 시점은 어떤 관계인가?": ["문학", "fiction/narrator-point-of-view"],
+    "시에서 시인과 시적 화자는 어떻게 구별되나?": ["문학", "poetry/poetic-speaker"],
+    "자유간접화법은 무엇이며 어떤 효과가 있나?": ["문학", "fiction/free-indirect-style"],
+    "판소리계 소설은 어떤 특징을 가지나?": ["문학", "classical-fiction/pansori-novel"],
+    "'찬란한 슬픔의 봄'은 반어인가 역설인가?": ["문학", "poetry/irony-paradox"]
+  }
+}

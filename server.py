@@ -112,6 +112,8 @@ PAUSED='지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 �
 ASK_CLOSED='AI 해설은 개론서의 내용을 추려 쓰는 것이어서, 저작권을 지키기 위해 관리자가 열람을 허락해 드린 분께만 열어 두었습니다. 너그러이 양해해 주시면 감사하겠습니다. 용어의 뜻은 로그인하지 않아도 용어 카드에서 바로 보실 수 있습니다.'
 NO_KEY='AI 해설을 쓰려면 OpenAI API 키를 연결해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다.'
 
+NOT_FOUND='관련 근거를 찾지 못했습니다. 용어를 짧게 바꾸거나 검색 영역을 넓혀 주세요.'
+
 def strip_sources(result):
     for source in result['sources']:
         source.pop('text',None);source.pop('evidence_text',None)
@@ -148,7 +150,8 @@ def generate(job,query,category,state,admin):
         # The concept entries the question names are verified notes on the books, with
         # the old letters and jamo intact: the 해설 reads them first.
         concepts=result.get('concepts') or []
-        sources=collect_evidence(query,category,result['sources'],openai_call,API_KEY,concepts)
+        sources=collect_evidence(query,category,result['sources'],openai_call,API_KEY,concepts,result.get('terms') or [])
+        if not sources:raise ValueError(NOT_FOUND)
         result['sources']=sources
         result['answer']=reason(query,sources,concepts);result['ai_used']=True
         answer=result['answer']
@@ -399,7 +402,11 @@ class Handler(BaseHTTPRequestHandler):
                 from term_index import match_terms
                 terms=match_terms(query,category);concepts=rank_concepts(match_concepts(query,category),terms)
                 result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms,'quota':None}
-                if not sources:result['notice']='관련 근거를 찾지 못했습니다. 용어를 짧게 바꾸거나 검색 영역을 넓혀 주세요.'
+                # A 해설 does not stop at an empty search. '두 사람이 손을 잡고 걷는다.'는 종속적으로
+                # 이어진 문장인가? found no paragraph, while its concept entry and the books' indexes
+                # named the very pages (2026-11-04: 5 of 24 eval questions stopped here). generate()
+                # gives the count back when the evidence step finds nothing either.
+                if not sources and not use_ai:result['notice']=NOT_FOUND
                 elif use_ai:
                     if not AI_LOCK.acquire(blocking=False):return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
                     job_id=None

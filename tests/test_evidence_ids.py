@@ -9,10 +9,12 @@ class EvidenceIdTests(unittest.TestCase):
         source={'source_id':'S1','title':'테스트 자료','text':raw,'evidence_text':raw}
         packet,registry=explanation.evidence_packet([source])
         self.assertTrue(registry)
-        for eid,citation in registry.items():
-            self.assertIn(compact(citation['quote']),compact(raw))
+        for eid,entry in registry.items():
+            # A paragraph id carries the clean sentence runs the server may quote back.
+            for quote in entry['quotes']:self.assertIn(compact(quote),compact(raw))
             resolved=explanation.resolve_evidence({'citations':[{'evidence_id':eid}]},registry)
-            self.assertEqual(resolved['citations'][0],citation)
+            self.assertEqual(resolved['citations'][0]['source_id'],'S1')
+            self.assertIn(resolved['citations'][0]['quote'],entry['quotes']+[''])
         bad=explanation.resolve_evidence({'evidence_id':'not-provided'},registry)
         self.assertEqual(bad['source_id'],'invalid')
 
@@ -20,4 +22,5 @@ class EvidenceIdTests(unittest.TestCase):
         initial=[{'id':1,'source_id':'S1','title':'독서','book_id':'none','pdf_page':1,'text':'독서의 개념과 의미 구성'}]
         with patch.object(explanation,'search_pages',return_value=[]) as search:
             explanation.collect_evidence('능동적으로 읽기','문식성',initial,lambda *a,**k:{'queries':['초인지','배경지식']},'mock')
-        self.assertEqual([c.args[0] for c in search.call_args_list],['초인지 독서','배경지식 독서'])
+        # Anchored to the question's domain first; the plain search only where that finds under two pages.
+        self.assertEqual([c.args[0] for c in search.call_args_list],['초인지 독서','초인지','배경지식 독서','배경지식'])

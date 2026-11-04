@@ -28,6 +28,8 @@ def strip_particle(token):return PARTICLE_RE.sub('',token) if len(token)>2 else 
 # 해당하 (…에 해당하는 것), 것들이 (어떤 것들이 있나요) and 아니었지 decided the search;
 # asked that way, 7 of 300 concept questions lost every page their name finds.
 ASKING=set('어떤 어떠한 어느 무슨 왜 언제 그리고 그러면 그럼 또 또는 혹은 및 것 것들 것은 것이 것을 것들이 것들은 해당 해당하 해당되 다른 같은 뭐 뭐야 뭐지 뭔가 뭔지 들어줘 알려 정리 정리해 정리해줘 말해 말해줘 가르쳐 가르쳐줘 궁금 궁금해 차이점 공통점 맞아 맞나 맞지 아닌가 아니지 아니야'.split())
+# 자유간접화법은 무엇이며 어떤 효과가 있나? found nothing for 무엇이며 (2026-11-04).
+ASKING|=set('무엇이 무엇을 무엇이며 무엇이고 무엇인지 무엇일까 분석해 분석해줘 지도해야 구별되나 가지나 쓰이나 생기나'.split())
 PREDICATE=re.compile(r'^(?:있|없|하|했|되|됐|아니|맞|같|다르|달라)[가-힣]{0,3}(?:나요|니까|까요|지요|죠|었지|았지|였지|었나|았나|는가|나|지|요)$')
 # A copula or subject marker left on a term (연어이 뭐야, 인용절인지): stripped only
 # when what remains is a term the books index and the whole word is not, so
@@ -99,4 +101,30 @@ def retrieve(db,query,category,book_id,limit):
     from passage_search import search
     from text_pipeline import init_passages
     init_passages(db)
-    return search(db,query,category,book_id,limit,groups_for(query))
+    found=search(db,query,category,book_id,limit,groups_for(query))
+    for fallback in () if found else fallback_queries(query):
+        found=search(db,fallback,category,book_id,limit,groups_for(fallback))
+        if found:break
+    return found
+
+# A quoted sentence or a pronunciation in brackets is what the question asks about,
+# not words a book prints beside the concept: every search word must be in the
+# paragraph, so '두 사람이 손을 잡고 걷는다.'는 종속적으로 이어진 문장인가? looked for
+# 사람·손을·잡고·걷는다 beside the term and found nothing.
+QUOTED=re.compile(r"'[^']+'|‘[^’]+’|\"[^\"]+\"|“[^”]+”|\[[^\]]+\]")
+def fallback_queries(query):
+    """Shorter questions to try when the whole one finds nothing: without the quoted
+    sentences (a quoted single word such as '이다' may be the term), then without
+    any quote or pronunciation ('국물'이 [궁물]로 …), then only the words the books'
+    indexes and the concept entries know as terms, then the longest of those."""
+    from concepts import query_terms,TOO_COMMON
+    sentences=QUOTED.sub(lambda m:' ' if m[0].startswith('[') or re.search(r'\s',m[0][1:-1].strip()) else m[0],query)
+    bare=QUOTED.sub(' ',query)
+    # The index lists particles and common words too (에서, 관계): not the question's term.
+    common={re.sub(r'\s','',t) for t in TOO_COMMON}|STOP|ASKING
+    known=[t for t in query_terms(bare) if t in known_terms() and t not in common and not PARTICLE_RE.fullmatch(t)]
+    known=[t for t in known if not any(t!=o and t in o for o in known)]
+    out=[]
+    for q in [sentences,bare,' '.join(known),max(known,key=len,default='')]:
+        if terms(q) and q.strip()!=query.strip() and q not in out:out.append(q)
+    return out

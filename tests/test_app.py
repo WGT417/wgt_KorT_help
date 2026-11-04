@@ -381,7 +381,7 @@ class PublicModeTests(unittest.TestCase):
     def setUp(self):
         import quota, access
         patches=[patch.object(server,'PUBLIC',True),patch.object(server,'ADMIN_TOKEN','test-admin-token'),patch.object(server,'QUOTA',quota.MemoryQuota()),
-                 patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key,concepts=():s),patch.object(server,'reason',return_value={'title':'mock'}),
+                 patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key,concepts=(),terms=():s),patch.object(server,'reason',return_value={'title':'mock'}),
                  patch.object(quota,'LIMIT',3),patch.object(server,'READERS',access.MemoryReaders()),patch.object(server,'ADMIN_EMAILS',{'admin@example.com'}),
                  patch.object(access,'verify_token',lambda token:self.ACCOUNTS.get(token,''))]
         for p in patches:p.start();self.addCleanup(p.stop)
@@ -540,6 +540,18 @@ class PublicModeTests(unittest.TestCase):
             # An id already taken, or one that is not a plain token, gets a fresh one from the server.
             for bad in [wanted,'bad id!','x'*41,123]:
                 job,data=start(bad);self.assertNotEqual(job,bad);self.assertEqual(data['answer'],{'title':'slow mock'})
+    def test_empty_search_still_looks_for_evidence_and_refunds_when_none_is_found(self):
+        # A 해설 does not stop at an empty search: the concept entries and index terms go on to the evidence step.
+        seen=[]
+        def collect(q,c,s,call,key,concepts=(),terms=()):seen.append((s,concepts,terms));return []
+        server.READERS.add('member@example.com','','admin@example.com')
+        question="'두 사람이 손을 잡고 걷는다.'는 종속적으로 이어진 문장인가?"
+        with patch.object(server,'search_pages',return_value=[]),patch.object(server,'collect_evidence',collect):
+            with self.request('/api/ask',{'question':question,'category':'문법','mode':'reason'},self.as_('member')) as r:data=json.load(r)
+        (sources,concepts,terms),=seen
+        self.assertEqual(sources,[]);self.assertTrue(concepts);self.assertTrue(terms)
+        self.assertFalse(data['ai_used']);self.assertEqual(data['notice'],server.NOT_FOUND);self.assertEqual(data['quota']['remaining'],3)
+        self.assertTrue(data['terms'])  # the page shows the term card in place of the 해설
     def test_unexpected_generation_error_refunds_and_frees_the_lock(self):
         with patch.object(server,'reason',side_effect=KeyError('boom')):data=self.ask()
         self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('만들지 못했습니다',data['notice'])
