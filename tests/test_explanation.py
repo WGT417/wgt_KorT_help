@@ -124,6 +124,20 @@ class QuotedExampleTests(unittest.TestCase):
         # The index points to 한국어문법총론 1 269–270쪽 for this term.
         self.assertIn('한국어문법총론 1',books)
 
+class OffTopicTests(unittest.TestCase):
+    """A question about nothing the books cover stops before the 해설 model."""
+    def test_unrelated_question_stops_before_the_explanation(self):
+        from explanation import OFF_TOPIC
+        with self.assertRaises(ValueError) as error:
+            collect_evidence('오늘 점심 메뉴 추천해 줘','전체',[],lambda *a,**k:{'related':False,'queries':[]},'test')
+        self.assertEqual(str(error.exception),OFF_TOPIC)
+    def test_the_librarys_own_pointers_outweigh_the_plan(self):
+        from term_index import match_terms
+        terms=match_terms('비음화','문법')
+        self.assertTrue(collect_evidence('비음화','문법',[],lambda *a,**k:{'related':False,'queries':[]},'test',(),terms))
+        # A plan written before 'related' existed counts as related.
+        self.assertTrue(collect_evidence('비음화','문법',core.search_pages('비음화','문법'),lambda *a,**k:{'queries':[]},'test'))
+
 class VolumeTests(unittest.TestCase):
     def test_a_volume_the_library_lacks_rejects_the_point(self):
         # Gemini's notebook cited 한국어표준문법's sentence as 『한국어 문법총론 2』.

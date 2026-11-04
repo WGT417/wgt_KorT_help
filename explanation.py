@@ -10,7 +10,10 @@ CITATION=obj({'source_id':STRING,'quote':STRING})
 POINT=obj({'label':STRING,'text':STRING,'examples':array(STRING),'citations':array(CITATION)})
 SECTION=obj({'title':STRING,'points':array(POINT),'subsections':array(obj({'title':STRING,'points':array(POINT)}))})
 ANSWER_SCHEMA=obj({'title':STRING,'lead':obj({'text':STRING,'citations':array(CITATION)}),'sections':array(SECTION),'summary':obj({'columns':array(STRING),'rows':array(obj({'cells':array(STRING),'citations':array(CITATION)}))}),'limitations':STRING,'insufficient':{'type':'boolean'}})
-PLAN_SCHEMA=obj({'queries':array(STRING)})
+PLAN_SCHEMA=obj({'related':{'type':'boolean'},'queries':array(STRING)})
+# "오늘 점심 메뉴 추천해 줘" found a page by chance, the plan searched 점심 메뉴 and
+# 균형 잡힌 식사, and the 해설 model was about to write from 18 pages (2026-11-04).
+OFF_TOPIC='국어 개론서에서 다루는 내용과 관련된 질문이 아니어서 해설을 쓰지 않았습니다. 문법·문학·화법·작문·독서의 개념이나 예문으로 물어 주세요.'
 
 # Select evidence IDs rather than asking the model to retype OCR symbols.
 MODEL_CITATION=obj({'evidence_id':STRING})
@@ -290,9 +293,13 @@ overview가 비어 있으면 질문만 보고 개론서가 쓰는 용어로 검�
 sound_changes는 질문의 예문 표기와 발음을 자모 단위로 맞대어 짚은 음운 변동입니다. 이 이름들은 따로 검색하므로, 검색어는 그 변동의 조건·하위 유형·관련 규칙(예: 비음화라면 '자음 동화', '조음 위치', '조음 방법')에 쓰세요.
 검색어마다 핵심 용어 1~2개만 넣으세요. '종류 기능 예시 정의' 같은 요청 표현을 덧붙이지 마세요.
 현대 국어 질문에는 현대 국어를 중심으로, 역사적 내용은 질문이 요구할 때만 검색하세요.
-출력은 {"queries":["검색어"]}입니다.
+related는 질문이 국어(문법·문학·화법·작문·독서·매체)나 국어 교육에 관한 것이면 true, 아니면(예: 점심 메뉴, 날씨, 다른 교과의 문제) false입니다. false이면 queries는 빈 배열로 둡니다.
+출력은 {"related":true,"queries":["검색어"]}입니다.
 '''+json.dumps({'question':query,'sound_changes':changes,'concepts':concept_outline(concepts),'overview':[{'book':r['title'],'text':r.get('evidence_text',r['text'])[:3000]} for r in seed]},ensure_ascii=False)
     plan=call(prompt,key,schema=PLAN_SCHEMA,max_tokens=4000,effort='low')
+    # Stopped before the 해설 model only when nothing of the library's own points to
+    # the question either: no concept entry, no index term, no sound change.
+    if isinstance(plan,dict) and plan.get('related') is False and not concepts and not terms and not names:raise ValueError(OFF_TOPIC)
     queries=plan.get('queries',[]) if isinstance(plan,dict) else []
     if not isinstance(queries,list):queries=[]
     queries=list(dict.fromkeys(names+[q.strip() for q in queries if isinstance(q,str) and 2<=len(q.strip())<=70]))[:10+len(names)]
@@ -364,6 +371,7 @@ def prompt_for(query,sources,packet=None):
 - example_analysis: 질문의 예문 표기와 [발음]을 자모 단위로 맞대어 기계적으로 짚은 음운 변동 후보입니다(인용할 수 있는 근거가 아닙니다). 근거에서 그 변동의 설명을 찾아 확인한 뒤, 예문에서 어느 자음이 어떤 환경에서 무엇으로 바뀌었는지를 책의 규칙으로 설명하세요. 책이 다르게 설명하거나 근거로 확인되지 않으면 책을 따르세요.
 - ⟦ ⟧로 감싼 문장은 스캔 판독에서 글자(특히 옛한글·자모·기호·예문)가 깨진 문장입니다. 그 문장이 말하는 내용은 활용하되, 그 안의 깨진 표기는 그대로 옮기지도 추측해서 고치지도 마세요. 같은 형태가 concepts나 ⟦ ⟧ 밖의 문장에 있으면 그 표기를 쓰고, 어디에도 없으면 형태는 빼고 설명만 하세요. ⟦ ⟧ 밖의 문장과 낱말은 그대로 믿고 써도 됩니다.
 - 다만 고전 작품의 옛말 구절은 ⟦ ⟧ 밖에서도 판독 오류가 숨어 있기 쉽습니다(‘명월이’가 ‘영월이’로 읽힌 예). 구절이 옛 표기로도 현대어로도 어색한 낱말을 품고 있으면 그 구절은 옮기지 말고 작품명과 내용 설명만 쓰세요.
+- 현대 작품의 인물명·지명·상호 같은 고유명사와 인용 구절에도 ⟦ ⟧ 밖에서 판독 오류가 숨어 있을 수 있습니다(「메밀꽃 필 무렵」의 ‘충줏집’이 ‘충춧집’으로 읽힌 예). 한국어 표기나 그 작품의 맥락으로 보아 어색한 고유명사·구절은 그대로 옮기지 말고 ‘주막의 여인’처럼 풀어서 설명하세요.
 
 [답하는 법]
 1. lead에는 질문에 대한 직접 답을 2~4문장으로 씁니다. 예/아니요로 답할 수 있는 질문이면 첫 문장을 "네," 또는 "아니요,"로 시작하고 곧바로 핵심 이유를 댑니다. 질문이 여러 개면 각각에 답합니다.
