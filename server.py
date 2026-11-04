@@ -2,6 +2,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlsplit, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from http.client import HTTPException
 import os, json, re, threading, secrets, mimetypes, time, subprocess, gzip
 from core import ROOT, DATA, connect, init_db, search_pages, route_question, pymupdf, normalized, quality, ocr_page
 from explanation import collect_evidence, prompt_for, validate, ANSWER_SCHEMA,MODEL_ANSWER_SCHEMA,evidence_packet,resolve_evidence,add_cited_pages
@@ -72,13 +73,19 @@ def openai_call(prompt,key,*,schema=None,max_tokens=16000,effort='medium',model=
     format={'type':'json_schema','name':'library_response','schema':schema,'strict':True} if schema else {'type':'json_object'}
     payload={'model':model or MODEL,'input':prompt,'reasoning':{'effort':effort},'max_output_tokens':max_tokens,'text':{'format':format},'store':False}
     request=Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','Authorization':f'Bearer {key}'},method='POST')
-    try:
-        with urlopen(request,timeout=300) as response: result=json.load(response)
-    except HTTPError as error:
-        code=error.code
-        raise ValueError({400:'모델 또는 요청 설정을 확인해 주세요.',401:'OpenAI API 키 인증에 실패했습니다.',403:'OpenAI API 키의 사용 권한을 확인해 주세요.',404:f'{model or MODEL} 모델 접근 권한을 확인해 주세요.',429:'OpenAI API 잔액 또는 요청 한도를 확인해 주세요.'}.get(code,'OpenAI API가 응답하지 못했습니다. 잠시 후 다시 시도해 주세요.')) from None
-    except (URLError,TimeoutError):raise ValueError('OpenAI 연결 시간이 초과되었거나 네트워크에 연결할 수 없습니다.') from None
-    except ValueError:raise ValueError('OpenAI 응답을 읽을 수 없습니다. 잠시 후 다시 시도해 주세요.') from None
+    # OpenAI sometimes closes a long request without a response (RemoteDisconnected,
+    # 2026-11-04, a 해설 after about a minute): asked once more before giving up.
+    for attempt in (1,2):
+        try:
+            with urlopen(request,timeout=300) as response: result=json.load(response)
+            break
+        except HTTPError as error:
+            code=error.code
+            raise ValueError({400:'모델 또는 요청 설정을 확인해 주세요.',401:'OpenAI API 키 인증에 실패했습니다.',403:'OpenAI API 키의 사용 권한을 확인해 주세요.',404:f'{model or MODEL} 모델 접근 권한을 확인해 주세요.',429:'OpenAI API 잔액 또는 요청 한도를 확인해 주세요.'}.get(code,'OpenAI API가 응답하지 못했습니다. 잠시 후 다시 시도해 주세요.')) from None
+        except (URLError,TimeoutError):raise ValueError('OpenAI 연결 시간이 초과되었거나 네트워크에 연결할 수 없습니다.') from None
+        except (ConnectionError,HTTPException):
+            if attempt==2:raise ValueError('OpenAI 연결이 응답 없이 끊겼습니다. 잠시 후 다시 시도해 주세요.') from None
+        except ValueError:raise ValueError('OpenAI 응답을 읽을 수 없습니다. 잠시 후 다시 시도해 주세요.') from None
     try:
         if result.get('status')!='completed':raise ValueError('incomplete response')
         raw=''.join(part['text'] for item in result['output'] if item.get('type')=='message' for part in item.get('content',[]) if part.get('type')=='output_text')

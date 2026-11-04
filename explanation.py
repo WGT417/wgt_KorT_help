@@ -120,10 +120,14 @@ def concept_pages(query,concepts,limit=12):
     groups=groups_for(query);genre=asked_genre(query);scored=[]
     for rank,entry in enumerate(concepts):
         if genre and GENRES.get(entry.get('parent'),genre)!=genre:continue
+        # An entry the question names explains it in every item, whether or not the
+        # item repeats the name: 자유간접화법's 정의, 의식의 흐름 and 서술자와 인물의 거리
+        # items do not, and half its pages never reached the 해설 (2026-11-04).
+        named=entry.get('match')=='exact'
         for order,(heading,label,text,pages) in enumerate(concept_items(entry)):
             c=normalized(heading+label+text)
             hits=sum(any(normalized(t) in c for t in g) for g in groups)
-            if hits:scored.append((-hits,rank,order,pages))
+            if hits or named:scored.append((-hits,rank,order,pages))
     out=[]
     for *_,pages in sorted(scored):
         for p in pages:

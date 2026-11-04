@@ -85,6 +85,15 @@ class OpenAITransportTests(unittest.TestCase):
         for response in responses:
             with self.subTest(response=response),patch.object(server,'urlopen',return_value=io.BytesIO(json.dumps(response).encode())):
                 with self.assertRaises(ValueError):server.openai_call('JSON','test-secret')
+    def test_dropped_connection_is_asked_once_more(self):
+        from http.client import RemoteDisconnected
+        response={'status':'completed','output':[{'type':'message','content':[{'type':'output_text','text':'{"ok":true}'}]}]}
+        with patch.object(server,'urlopen',side_effect=[RemoteDisconnected('closed'),io.BytesIO(json.dumps(response).encode())]) as call:
+            self.assertEqual(server.openai_call('JSON','test-secret'),{'ok':True})
+        self.assertEqual(call.call_count,2)
+        with patch.object(server,'urlopen',side_effect=RemoteDisconnected('closed')) as call:
+            with self.assertRaises(ValueError) as error:server.openai_call('JSON','test-secret')
+        self.assertEqual(call.call_count,2);self.assertIn('끊겼습니다',str(error.exception))
     def test_api_errors_do_not_expose_secrets(self):
         for code in [401,403,404,429,500]:
             with self.subTest(code=code),patch.object(server,'urlopen',side_effect=HTTPError('https://api.openai.com/v1/responses',code,'test-secret',{},None)):
