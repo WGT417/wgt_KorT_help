@@ -22,11 +22,9 @@ import sys,json,argparse
 from collections import Counter
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import core
-from concepts import all_concepts,match_concepts
-from term_index import match_terms
+from concepts import all_concepts
 import explanation
-from server import rank_concepts
+from server import question_context
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--no-concepts',action='store_true');args=parser.parse_args()
@@ -35,11 +33,10 @@ def main():
     no_plan=lambda *a,**k:{'queries':[]}
     total=Counter()
     for question,(category,cid) in questions.items():
+        initial,terms,concepts=question_context(question,category)
+        if args.no_concepts:terms,concepts=[],[]
         gold={(s['book'],int(s['pdf_page'])) for s in entries[cid]['sources'] if s.get('status')=='verified'}
-        initial=core.search_pages(question,category)
-        terms=match_terms(question,category)
-        concepts,terms=([],[]) if args.no_concepts else (rank_concepts(match_concepts(question,category),terms),terms)
-        # As generate() runs it; the server writes nothing when this step finds nothing.
+        # As /api/ask and generate() run it; the server writes nothing when this step finds nothing.
         selected=[s for s in explanation.collect_evidence(question,category,initial,no_plan,'',concepts,terms) if s.get('id')]
         have={(s['title'],s['pdf_page']) for s in selected}
         recall=sum(any(t==b and abs(p-g)<=1 for t,p in have) for b,g in gold)/len(gold)

@@ -129,6 +129,11 @@
 - 판별 질문은 결론 → 책의 판별 기준 → 예문에 적용 → 책별 견해 차이. 쉼표만 찍는 ‘끼어들기’처럼 문장을 바꾸지 않는 판별법은
   금지, 일람표는 늘 쓴다(사용자 요청 2026-11-04). 서재에 없는 권수(『한국어 문법총론 2』 — NotebookLM이 표준문법 문장에 붙인
   이름)를 쓴 항목은 `names_missing_volume`이 뺀다.
+- **질문이 예문과 발음만 대고 변동 이름을 대지 않아도 찾는다**(`phonology.py`). ‘국물’이 [궁물]로 → 비음화, ‘솜이불’을
+  [솜니불]로 → ㄴ 첨가처럼 표기와 발음을 자모 단위로 맞대 표준 발음법의 규칙대로 이름을 짚고, 그 이름으로 개념 항목·찾아보기·
+  검색을 찾는다(`server.question_context`). 표기와 발음이 기호를 사이에 두고 붙어 찍힌 쪽(국물[궁물], 국물도[궁물도])도
+  넣는다(`example_pages`). 정답 쪽 회수율 국물 0%→36%(책 33%→100%), 솜이불 8%→83%. 규칙에 없는 예는 이름을 붙이지 않고,
+  모델에게는 ‘자동 판정 후보, 책으로 확인’으로만 넘긴다(`example_analysis`).
 - 근거를 바꿀 때는 `python scripts/eval_evidence.py`로 잰다(GPT 호출 없음, 임용형 질문 24개, 약 5분). 정답 쪽은 개념 항목의
   근거 쪽이라 개념 항목이 근거에 들어가면 부풀려진다. 검색만의 힘은 `--no-concepts`로 본다.
 
@@ -148,7 +153,7 @@ python scripts/check_concepts.py                          # 개념 항목 형식
 python scripts/check_note_overlap.py                      # 풀이가 근거 쪽을 얼마나 그대로 옮겼나 (몇 초)
 python scripts/audit_term_cards.py                        # 전수조사 (약 24분, data/term-card-audit.json)
 python -m unittest tests.test_app tests.test_text_pipeline # 테스트 83개 (한가할 때 약 90초, 바쁘면 4분)
-python -m unittest tests.test_explanation tests.test_evidence_ids # AI 해설 근거·검증 (약 25초). 위 명령에 없어 10월에 2개가 깨진 채였다
+python -m unittest tests.test_explanation tests.test_evidence_ids tests.test_phonology # AI 해설 근거·검증 (약 25초). 위 명령에 없어 10월에 2개가 깨진 채였다
 python scripts/eval_evidence.py                           # AI 해설 근거가 정답 쪽에 닿는지 (GPT 호출 없음, 약 5분)
 python scripts/build_term_cards.py                        # 용어 목록·카드 6,469장을 dist/terms/에 (약 2분)
 ```

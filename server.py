@@ -179,6 +179,25 @@ def wait_job(job_id,job,deadline):
     if job['done'].wait(max(1.0,deadline-time.monotonic())):return job['result']
     return {'question':job['question'],'pending':job_id,'quota':job['quota']}
 
+def question_context(query,category,bid=''):
+    """Search results, index term cards and concept entries for a question. When its
+    examples show a sound change the question does not name ('국물'이 [궁물]로 …,
+    phonology.change_names), the change is looked up as if named, ahead of the
+    question's own words: those name nothing the books index, and search found
+    0% and 8% of the pages for 국물 and 솜이불 (2026-11-04)."""
+    from concepts import match_concepts
+    from term_index import match_terms
+    from phonology import change_names
+    names=change_names(query)
+    sources=search_pages(query,category,bid)
+    terms=match_terms(query,category);concepts=match_concepts(query,category)
+    if names:
+        found=[search_pages(n,category,bid,limit=4) for n in names]+[sources]
+        sources=list({r['id']:r for i in range(max(map(len,found))) for g in found if i<len(g) for r in [g[i]]}.values())[:8]
+        terms=list({t['key']:t for t in [t for n in names for t in match_terms(n,category)]+terms}.values())[:4]
+        concepts=list({c['id']:c for c in [c for n in names for c in match_concepts(n,category) if c['match']=='exact']+concepts}.values())[:4]
+    return sources,terms,rank_concepts(concepts,terms)
+
 def rank_concepts(concepts,terms):
     """관형절 asked, 안은문장 entry matched only through its alias, and the
     books' index has 관형절 itself: the index card answers, the entry is
@@ -397,10 +416,7 @@ class Handler(BaseHTTPRequestHandler):
                     closed=NO_KEY if not API_KEY else PAUSED if state.get('unavailable') else spent_notice() if state.get('remaining')==0 else None
                     if closed:return self.send(200,{'question':query,'route':'reason','route_reason':why,'sources':[],'answer':None,'ai_used':False,'notice':closed,'concepts':[],'terms':[],'quota':state})
                     if AI_LOCK.locked():return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
-                sources=search_pages(query,category,bid)
-                from concepts import match_concepts
-                from term_index import match_terms
-                terms=match_terms(query,category);concepts=rank_concepts(match_concepts(query,category),terms)
+                sources,terms,concepts=question_context(query,category,bid)
                 result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms,'quota':None}
                 # A 해설 does not stop at an empty search. '두 사람이 손을 잡고 걷는다.'는 종속적으로
                 # 이어진 문장인가? found no paragraph, while its concept entry and the books' indexes
