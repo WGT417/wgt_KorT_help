@@ -308,15 +308,35 @@ function saveAsk(entry){
 }
 function savedAsk(){try{return JSON.parse(sessionStorage.getItem(SAVED_ASK)||'null');}catch{return null;}}
 function newJobId(){try{return crypto.randomUUID();}catch{return Array.from(crypto.getRandomValues(new Uint8Array(18)),b=>b.toString(16).padStart(2,'0')).join('');}}
-async function resumeJob(entry){
-    // A reload during the first request's search finds no job yet, so give that search a minute to start it.
+// One 해설 at a time from this page. The button used to lock only after the CSRF token had come,
+// so two taps while a fresh server took 17s over it sent two asks (2026-11-13).
+let asking=false;
+// A wait that ends early when the page comes back to the front: a phone switching apps holds the timers.
+function pause(ms){return new Promise(resolve=>{const done=()=>{clearTimeout(timer);document.removeEventListener('visibilitychange',back);resolve();};const back=()=>{if(!document.hidden)done();};const timer=setTimeout(done,ms);document.addEventListener('visibilitychange',back);});}
+// No status (a dropped connection, a proxy's error page) or a server error: the job may still be running.
+const unsure=error=>!error.status||error.status>=500;
+// Follows the job until it is written. A dropped connection asks again instead of ending the wait:
+// the server keeps writing, and the same job id sent again joins that job, so nothing is counted twice.
+// A 404 before the server has named the job is the first request still searching (a reload); after, the job is gone.
+async function follow(entry,send){
+    let failures=0;
     for(;;){
-        try{return await api('/api/ask/'+entry.job);}
+        let data;
+        try{data=send?await api('/api/ask',{question:entry.question,category:entry.category,mode:entry.mode,job:entry.job}):await api('/api/ask/'+entry.job);failures=0;}
         catch(error){
-            if(error.status!==404)throw error;
-            if(Date.now()-entry.started>60000)throw Object.assign(new Error('새로고침하는 사이 해설을 이어 받지 못했습니다. 질문을 그대로 두었으니 다시 눌러 주세요.'),{status:404});
+            const searching=error.status===404&&!entry.confirmed;
+            if(searching&&Date.now()-entry.started<60000){await pause(3000);continue;}
+            if(searching)throw Object.assign(new Error('새로고침하는 사이 해설을 이어 받지 못했습니다. 질문을 그대로 두었으니 다시 눌러 주세요.'),{status:404});
+            if(!unsure(error)||++failures>6||Date.now()-entry.started>360000)throw error;
+            notice(`연결이 잠시 끊겨 해설을 다시 이어 받고 있습니다. ${Math.round((Date.now()-entry.started)/1000)}초 지났습니다.`);
+            await pause(Math.min(15000,2000*2**(failures-1)));
+            continue;
         }
-        await new Promise(resolve=>setTimeout(resolve,3000));
+        if(!data.pending)return data;
+        send=false;
+        if(!entry.confirmed||data.pending!==entry.job){entry.job=data.pending;entry.confirmed=true;saveAsk(entry);}
+        if(data.quota)showQuota(data.quota);
+        notice(`여러 개론서의 근거를 모아 해설을 쓰고 있습니다. ${Math.round((Date.now()-entry.started)/1000)}초 지났습니다. 조금만 더 기다려 주세요.`);
     }
 }
 // Signing in from the 원문 notice asks for the answer just written again, now with its quotes.
@@ -326,7 +346,9 @@ async function reloadAnswer(){
     try{const data=await api('/api/ask/'+saved.job);if(data.ai_used&&data.question===saved.question){renderResults(data,true);saveAsk({...saved,data});}}catch{}
 }
 async function ask(question,category,mode,resume=null){
+    if(asking)return;
     if(mode==='reason'&&askClosed()){renderAskGate();$('#ask-closed').scrollIntoView({block:'nearest'});return;}
+    asking=true;
     const button=$('#ask-button');
     $('#answer').replaceChildren();$('#concepts').replaceChildren();$('#sources').replaceChildren();$('#results').hidden=true;
     button.disabled=true;button.textContent='해설 쓰는 중…';$('#results').setAttribute('aria-busy','true');
@@ -335,13 +357,9 @@ async function ask(question,category,mode,resume=null){
     if(mode==='reason'&&!entry.job)entry.job=newJobId();
     saveAsk(entry);
     try{
-        let data=resume?await resumeJob(entry):await api('/api/ask',{question,category,mode,job:entry.job});
-        while(data.pending){
-            if(data.quota)showQuota(data.quota);
-            if(data.pending!==entry.job){entry.job=data.pending;saveAsk(entry);}
-            notice(`여러 개론서의 근거를 모아 해설을 쓰고 있습니다. ${Math.round((Date.now()-entry.started)/1000)}초 지났습니다. 조금만 더 기다려 주세요.`);
-            data=await api('/api/ask/'+data.pending);
-        }
+        // The token comes with the status: a page that has none yet fetches it here, the button already locked.
+        if(!resume&&!csrf){await loadStatus();if(!csrf)throw Object.assign(new Error('서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.'),{unsent:true});}
+        const data=await follow(entry,!resume);
         if(data.question!==question)throw new Error('질문과 응답이 일치하지 않아 표시하지 않았습니다. 다시 질문해 주세요.');
         // No 해설 (the day's count used up, no key, nothing found, generation failed): the page shows why and nothing else.
         if(data.ask_closed)loadStatus();  // the page thought this account was let in; show the notice under the form
@@ -351,11 +369,11 @@ async function ask(question,category,mode,resume=null){
     }catch(error){
         notice(error.message,true);
         // The server answered with an error, so there is nothing left to wait for. A dropped connection
-        // (no status) may still have a job running, and a reload will ask for it again.
-        if(error.status||!entry.job)saveAsk({question,category,mode});
-    }finally{button.disabled=false;button.textContent='해설 받기 →';$('#results').removeAttribute('aria-busy');}
+        // or a server error may still have a job running, and a reload will ask for it again.
+        if(!unsure(error)||error.unsent||!entry.job)saveAsk({question,category,mode});
+    }finally{asking=false;button.disabled=false;button.textContent='해설 받기 →';$('#results').removeAttribute('aria-busy');}
 }
-$('#question-form').addEventListener('submit',async event=>{event.preventDefault();if(!csrf){await loadStatus();if(!csrf)return;}await ask($('#question').value.trim(),$('#category').value,'reason');});
+$('#question-form').addEventListener('submit',event=>{event.preventDefault();ask($('#question').value.trim(),$('#category').value,'reason');});
 // In the term cards view the side menu's areas filter the cards instead of the question.
 document.querySelectorAll('[data-category]').forEach(button=>button.onclick=()=>{if(!$('#terms-view').hidden){termsState.area={'문식성':1,'문법':2,'문학':4}[button.dataset.category];termsState.initial='';termsState.shown=PAGE;renderTermsView();}else chooseCategory(button.dataset.category);});
 document.querySelectorAll('[data-question]').forEach(button=>button.onclick=()=>{$('#question').value=button.dataset.question;$('#category').value=button.dataset.question.includes('피동')?'문법':'전체';$('#question').focus();});

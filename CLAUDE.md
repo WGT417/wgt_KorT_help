@@ -143,6 +143,18 @@
   - 국어와 무관한 질문(“오늘 점심 메뉴 추천해 줘”는 검색이 우연히 한 쪽을 잡고 계획이 ‘점심 메뉴’를 찾아 해설까지 갔다): 검색 계획이
     `related`를 함께 답하고, false인데 개념 항목·용어 카드·음운 변동이 하나도 없으면 해설 모델 전에 멈추고 횟수를 돌려준다(`OFF_TOPIC`).
     개념 이름 없이 물은 정상 질문(발표를 두려워하는 학생)은 true로 지나갔다.
+- **같은 질문의 해설은 작업 하나로 모은다**(2026-11-13, `running_job`). 같은 질문(+영역)이 쓰이는 중이거나, 다 썼는데
+  아무 화면도 받아 가지 않았으면 새 요청은 그 작업에 붙는다(검색·횟수 차감 없음). 429는 다른 질문만 받는다. 화면은 누르는 즉시
+  잠그고(`asking`), 연결이 끊기면 같은 작업 id로 다시 묻는다(`follow`). 그날 휴대폰 한 대가 새 인스턴스의 첫 상태 응답(17초)을
+  기다리는 사이 두 번 눌러 POST가 16ms 차로 둘 나갔고, 두 번째의 429가 화면이 첫 작업을 놓게 해 그 해설은 아무에게도 가지 않았다.
+  이어 누른 8번도 전부 429였다.
+- **Cloud Run은 최대 1대로 두어도 새 인스턴스를 띄운다**(로그상 11-04 03:12, 11-13 05:28). 작업은 프로세스 메모리에만 있어서
+  그때의 폴링은 404(`ai_lost`)가 난다. 잦으면 작업을 Firestore에 두고 CPU를 상시 할당한다. 세션 고정(session affinity)은
+  Hosting이 `__session` 말고는 쿠키를 지워서 통하지 않는다.
+- **해설마다 로그 한 줄**(`jsonPayload.event="ai_job"`)이 남는다: `outcome`(ok·notice·error), `notice`, `context_s`(요청부터
+  작업 시작까지, 첫 검색 포함), `evidence_s`(검색 계획 + 확장 검색, 계획만은 `calls[0].s`), `answer_s`, `calls`(호출마다 모델·초·
+  입출력·추론 토큰). 붙은 요청은 `ai_attach`, 막힌 요청은 `ai_busy`, 잃은 작업은 `ai_lost`. 속도에 손대기 전에 이 수치부터 본다.
+  `gcloud logging read 'resource.labels.service_name="kor-teacher" AND jsonPayload.event="ai_job"' --project kor-teacher-help`
 - 근거를 바꿀 때는 `python scripts/eval_evidence.py`로 잰다(GPT 호출 없음, 임용형 질문 24개, 약 5분). 정답 쪽은 개념 항목의
   근거 쪽이라 개념 항목이 근거에 들어가면 부풀려진다. 검색만의 힘은 `--no-concepts`로 본다.
 

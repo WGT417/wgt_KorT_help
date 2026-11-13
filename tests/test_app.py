@@ -392,7 +392,9 @@ class PublicModeTests(unittest.TestCase):
         patches=[patch.object(server,'PUBLIC',True),patch.object(server,'ADMIN_TOKEN','test-admin-token'),patch.object(server,'QUOTA',quota.MemoryQuota()),
                  patch.object(server,'API_KEY','mock-key'),patch.object(server,'collect_evidence',lambda q,c,s,call,key,concepts=(),terms=():s),patch.object(server,'reason',return_value={'title':'mock'}),
                  patch.object(quota,'LIMIT',3),patch.object(server,'READERS',access.MemoryReaders()),patch.object(server,'ADMIN_EMAILS',{'admin@example.com'}),
-                 patch.object(access,'verify_token',lambda token:self.ACCOUNTS.get(token,''))]
+                 patch.object(access,'verify_token',lambda token:self.ACCOUNTS.get(token,'')),
+                 # An answer one test wrote and never fetched would be handed to the next test's ask (running_job).
+                 patch.dict(server.AI_JOBS,clear=True)]
         for p in patches:p.start();self.addCleanup(p.stop)
     def as_(self,who):return {'X-Id-Token':f'token-{who}-0123456789'}
     def page(self,**headers):
@@ -543,12 +545,59 @@ class PublicModeTests(unittest.TestCase):
                 if not data.get('pending'):break
             return first['pending'],data
         wanted='reload-test-'+secrets.token_urlsafe(12)
-        with patch.object(server,'AI_WAIT',0),patch.object(server,'reason',side_effect=slow):
+        with patch.object(server,'AI_WAIT',0),patch.object(server,'reason',side_effect=slow) as reason:
             job,data=start(wanted)
             self.assertEqual(job,wanted);self.assertEqual(data['answer'],{'title':'slow mock'})
-            # An id already taken, or one that is not a plain token, gets a fresh one from the server.
-            for bad in [wanted,'bad id!','x'*41,123]:
+            # The page sends its id again only to retry its own ask after a dropped connection:
+            # it gets that answer back, and nothing is written or counted again.
+            with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'reason','job':wanted},{'X-Admin-Token':'test-admin-token'}) as r:again=json.load(r)
+            self.assertEqual(again['answer'],{'title':'slow mock'});self.assertNotIn('pending',again);self.assertEqual(reason.call_count,1)
+            # An id taken by another question, or one that is not a plain token, gets a fresh one from the server.
+            with self.request('/api/ask',{'question':'능동과 주동의 차이','category':'문법','mode':'reason','job':wanted},{'X-Admin-Token':'test-admin-token'}) as r:other=json.load(r)
+            self.assertEqual(other['question'],'능동과 주동의 차이');self.assertNotEqual(other.get('pending'),wanted)
+            if other.get('pending'):server.AI_JOBS[other['pending']]['done'].wait(10)
+            for bad in ['bad id!','x'*41,123]:
                 job,data=start(bad);self.assertNotEqual(job,bad);self.assertEqual(data['answer'],{'title':'slow mock'})
+    def test_second_ask_of_a_question_being_written_joins_it(self):
+        # 2026-11-13: a phone's second tap met 429 from its own first ask, the page let go of the
+        # first, and its answer was written for nobody.
+        def slow(query,sources,concepts=()):time.sleep(4);return {'title':'slow mock'}
+        with patch.object(server,'AI_WAIT',0),patch.object(server,'reason',side_effect=slow) as reason:
+            first=self.ask();second=self.ask()
+            self.assertEqual(second['pending'],first['pending'])
+            # Another question still waits its turn.
+            with self.assertRaises(HTTPError) as e:self.request('/api/ask',{'question':'능동과 주동의 차이','category':'문법','mode':'reason'},self.as_('member'))
+            self.assertEqual(e.exception.code,429);self.assertIn('다른 질문',json.load(e.exception)['error'])
+            self.assertTrue(server.AI_JOBS[first['pending']]['done'].wait(10))
+            # Written and never received: the next ask of it gets that answer at once, at no cost.
+            third=self.ask()
+            self.assertEqual(third['answer'],{'title':'slow mock'});self.assertEqual(reason.call_count,1)
+            self.assertEqual(third['quota']['remaining'],2);self.assertEqual(self.status()['quota']['remaining'],2)
+            # Received once, the same question asked again is a new 해설.
+            fourth=self.ask();self.assertNotEqual(fourth['pending'],first['pending'])
+            self.assertTrue(server.AI_JOBS[fourth['pending']]['done'].wait(10))
+        self.assertEqual(self.status()['quota']['remaining'],1)
+    def test_two_asks_sent_at_once_share_one_job(self):
+        # The submit handler sent two POSTs 16ms apart: both search, one writes, the other joins it.
+        def slow(query,sources,concepts=()):time.sleep(4);return {'title':'slow mock'}
+        results=[]
+        with patch.object(server,'AI_WAIT',0),patch.object(server,'reason',side_effect=slow) as reason:
+            threads=[threading.Thread(target=lambda:results.append(self.ask())) for _ in range(2)]
+            for t in threads:t.start()
+            for t in threads:t.join(60)
+            self.assertEqual(len(results),2);self.assertEqual(len({r['pending'] for r in results}),1)
+            self.assertTrue(server.AI_JOBS[results[0]['pending']]['done'].wait(10));self.assertEqual(reason.call_count,1)
+        self.assertEqual(self.status()['quota']['remaining'],2)
+    def test_each_job_logs_its_outcome_and_times(self):
+        # Every 해설 leaves one line, the ones that end in a notice too, with the time of each step.
+        with patch.object(server,'log_event') as log:
+            self.ask()
+            with patch.object(server,'reason',side_effect=ValueError('OpenAI 실패')):self.ask()
+            with self.assertRaises(HTTPError):self.request('/api/ask/'+'y'*20)
+        jobs=[c.kwargs for c in log.call_args_list if c.args==('ai_job',)]
+        self.assertEqual([j['outcome'] for j in jobs],['ok','notice']);self.assertEqual(jobs[1]['notice'],'OpenAI 실패')
+        for key in ['evidence_s','answer_s','total_s','context_s','pages']:self.assertIn(key,jobs[0])
+        self.assertIn(('ai_lost',),[c.args for c in log.call_args_list])
     def test_empty_search_still_looks_for_evidence_and_refunds_when_none_is_found(self):
         # A 해설 does not stop at an empty search: the concept entries and index terms go on to the evidence step.
         seen=[]

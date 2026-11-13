@@ -69,10 +69,20 @@ def restrict_secret_file(path):
         except (OSError,subprocess.SubprocessError) as error:raise OSError('키 파일 권한을 제한할 수 없습니다.') from error
     else:os.chmod(path,0o600)
 
+def log_event(event,**fields):
+    """One JSON line per event. Cloud Logging reads it as jsonPayload, so
+    jsonPayload.event="ai_job" lists every 해설 with how long each step took."""
+    print(json.dumps({'event':event,**{k:v for k,v in fields.items() if v is not None}},ensure_ascii=False),flush=True)
+
+# The OpenAI calls of the 해설 being written on this thread (generate sets a list):
+# seconds and tokens per call, so the log shows the plan and the answer apart.
+CALLS=threading.local()
+
 def openai_call(prompt,key,*,schema=None,max_tokens=16000,effort='medium',model=None):
     format={'type':'json_schema','name':'library_response','schema':schema,'strict':True} if schema else {'type':'json_object'}
     payload={'model':model or MODEL,'input':prompt,'reasoning':{'effort':effort},'max_output_tokens':max_tokens,'text':{'format':format},'store':False}
     request=Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','Authorization':f'Bearer {key}'},method='POST')
+    began=time.monotonic()
     # OpenAI sometimes closes a long request without a response (RemoteDisconnected,
     # 2026-11-04, a 해설 after about a minute): asked once more before giving up.
     for attempt in (1,2):
@@ -86,6 +96,10 @@ def openai_call(prompt,key,*,schema=None,max_tokens=16000,effort='medium',model=
         except (ConnectionError,HTTPException):
             if attempt==2:raise ValueError('OpenAI 연결이 응답 없이 끊겼습니다. 잠시 후 다시 시도해 주세요.') from None
         except ValueError:raise ValueError('OpenAI 응답을 읽을 수 없습니다. 잠시 후 다시 시도해 주세요.') from None
+    calls=getattr(CALLS,'log',None)
+    if calls is not None and isinstance(result,dict):
+        usage=result.get('usage') or {}
+        calls.append({'model':payload['model'],'s':round(time.monotonic()-began,1),'status':result.get('status'),'in':usage.get('input_tokens'),'out':usage.get('output_tokens'),'reasoning':(usage.get('output_tokens_details') or {}).get('reasoning_tokens')})
     try:
         if result.get('status')!='completed':raise ValueError('incomplete response')
         raw=''.join(part['text'] for item in result['output'] if item.get('type')=='message' for part in item.get('content',[]) if part.get('type')=='output_text')
@@ -101,7 +115,9 @@ def reason(query,sources,concepts=()):
 # Firebase Hosting cuts a proxied request at 60s, and an AI 해설 often takes
 # 45–70s. The answer is generated in a thread; a request waits at most AI_WAIT
 # and otherwise hands back a job id the page asks for again. Jobs live in this
-# process, which is enough because deploy.json runs one instance.
+# process. deploy.json asks for one instance, but Cloud Run still starts a new
+# one now and then (2026-11-04 03:12, 2026-11-13 05:28), and a poll that lands
+# there finds no job (404): the page then says so instead of waiting.
 AI_WAIT=48
 AI_JOBS={};JOBS_LOCK=threading.Lock()
 JOB_ID=re.compile(r'[A-Za-z0-9_-]{16,40}')
@@ -120,6 +136,9 @@ ASK_CLOSED='AI 해설은 개론서의 내용을 추려 쓰는 것이어서, 저�
 NO_KEY='AI 해설을 쓰려면 OpenAI API 키를 연결해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다.'
 
 NOT_FOUND='관련 근거를 찾지 못했습니다. 용어를 짧게 바꾸거나 검색 영역을 넓혀 주세요.'
+# Only another question meets this now: the same question joins the job (running_job).
+BUSY='다른 질문의 해설을 쓰고 있습니다. 1~2분 뒤에 다시 시도해 주세요.'
+LOST='작성 중이던 해설을 찾지 못했습니다. 서버가 바뀌었을 수 있으니 질문을 그대로 두고 다시 눌러 주세요.'
 
 def strip_sources(result):
     for source in result['sources']:
@@ -152,38 +171,67 @@ def closed_view(result):
     return view
 
 def generate(job,query,category,state,admin):
-    result=job['result']
+    result=job['result'];CALLS.log=[];times={};outcome='ok'
     try:
         # The concept entries the question names are verified notes on the books, with
         # the old letters and jamo intact: the 해설 reads them first.
         concepts=result.get('concepts') or []
+        began=time.monotonic()
         sources=collect_evidence(query,category,result['sources'],openai_call,API_KEY,concepts,result.get('terms') or [])
+        times['evidence_s']=round(time.monotonic()-began,1)
         if not sources:raise ValueError(NOT_FOUND)
         result['sources']=sources
+        began=time.monotonic()
         result['answer']=reason(query,sources,concepts);result['ai_used']=True
+        times['answer_s']=round(time.monotonic()-began,1)
         answer=result['answer']
         if answer.get('insufficient') and category!='전체':
             answer['limitations']=(answer.get('limitations','')+' 검색 영역을 ‘전체’로 바꾸면 다른 영역의 개론서까지 함께 찾아봅니다.').strip()
     except Exception as error:
+        outcome='notice' if isinstance(error,ValueError) else 'error'
         if not isinstance(error,ValueError):print(f'AI 해설 실패: {error!r}',flush=True)
         result['notice']=str(error) if isinstance(error,ValueError) else '해설을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.'
         refund_quota(admin)
         if 'remaining' in state:state['remaining']+=1
     finally:
-        AI_LOCK.release();strip_sources(result);job['done'].set()
+        try:
+            strip_sources(result)
+            # Before done is set, so the line is out by the time any page has the answer. A 해설 that
+            # ended in a notice used to leave no trace: 2026-11-13 05:26 ended after 25s, nobody knows why.
+            # evidence_s holds the plan call (calls[0]); the rest of it is the searches.
+            log_event('ai_job',severity={'ok':'INFO','notice':'WARNING'}.get(outcome,'ERROR'),job=job['id'][:8],outcome=outcome,notice=result.get('notice') or None,context_s=job.get('context_s'),total_s=round(time.monotonic()-job['at'],1),**times,pages=len(result.get('sources') or []),calls=CALLS.log)
+        except Exception as error:print(f'job wrap-up error: {error!r}',flush=True)
+        finally:CALLS.log=None;AI_LOCK.release();job['done'].set()
 
-def start_job(result,query,category,state,admin,wanted=None):
+def start_job(result,query,category,state,admin,wanted=None,context_s=None):
     # The page names the job before sending, so a reload during the first AI_WAIT can still ask for it.
-    job={'done':threading.Event(),'result':result,'question':query,'quota':state,'at':time.monotonic()}
+    job={'done':threading.Event(),'result':result,'question':query,'category':category,'quota':state,'at':time.monotonic(),'delivered':False,'context_s':context_s}
     with JOBS_LOCK:
         for old in [k for k,j in AI_JOBS.items() if time.monotonic()-j['at']>1800]:del AI_JOBS[old]
         job_id=wanted if isinstance(wanted,str) and JOB_ID.fullmatch(wanted) and wanted not in AI_JOBS else secrets.token_urlsafe(18)
-        AI_JOBS[job_id]=job
+        job['id']=job_id;AI_JOBS[job_id]=job
     threading.Thread(target=generate,args=(job,query,category,state,admin),daemon=True).start()
     return job_id
 
+def running_job(query,category,wanted=None):
+    """The job an ask joins instead of starting one or meeting 429: the same question
+    still being written, or written and not yet handed to any page. 2026-11-13 a phone
+    sent its question twice while a fresh instance took 17s over its first status; the
+    second ask met 429, the page let go of the first, eight more taps met 429, and the
+    first answer was written for nobody. The page's own job id (a retry after a dropped
+    connection) joins its job even once handed over, so it is asked for, not paid for, again."""
+    with JOBS_LOCK:
+        jobs=([(wanted,AI_JOBS[wanted])] if isinstance(wanted,str) and wanted in AI_JOBS else [])+sorted(AI_JOBS.items(),key=lambda item:-item[1]['at'])
+        for job_id,job in jobs:
+            if job['question']!=query or job['category']!=category:continue
+            if not job['done'].is_set():return job_id,job
+            if job['result'].get('ai_used') and (job_id==wanted or not job['delivered']):return job_id,job
+    return None,None
+
 def wait_job(job_id,job,deadline):
-    if job['done'].wait(max(1.0,deadline-time.monotonic())):return job['result']
+    if job['done'].wait(max(1.0,deadline-time.monotonic())):
+        job['delivered']=True
+        return job['result']
     return {'question':job['question'],'pending':job_id,'quota':job['quota']}
 
 def question_context(query,category,bid=''):
@@ -295,6 +343,9 @@ class Handler(BaseHTTPRequestHandler):
     def view(self,result):
         """What this visitor may receive of an answer or a card (closed_view)."""
         return result if self.can_read_pages() else closed_view(result)
+    def join_job(self,job_id,job,started):
+        log_event('ai_attach',job=job_id[:8],done=job['done'].is_set())
+        return self.send(200,self.view(wait_job(job_id,job,started+AI_WAIT)))
     def user_state(self):
         email=self.signed_in()
         return {'email':email,'admin':self.is_admin(),'reader':self.can_read_pages()} if email else None
@@ -384,7 +435,8 @@ class Handler(BaseHTTPRequestHandler):
             match=re.fullmatch(r'/api/ask/([A-Za-z0-9_-]{16,40})',path)
             if match:
                 job=AI_JOBS.get(match[1])
-                if not job:return self.send(404,{'error':'작성 중이던 해설을 찾지 못했습니다. 서버가 다시 시작되었을 수 있으니 다시 질문해 주세요.'})
+                # Counted so the log shows how often a new instance loses a job (see AI_WAIT).
+                if not job:log_event('ai_lost',job=match[1][:8]);return self.send(404,{'error':LOST})
                 return self.send(200,self.view(wait_job(match[1],job,time.monotonic()+AI_WAIT)))
             allowed={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/ux.css':'ux.css','/sw.js':'sw.js','/manifest.webmanifest':'manifest.webmanifest','/icon.svg':'icon.svg','/icon-192.png':'icon-192.png','/icon-512.png':'icon-512.png'}
             if path not in allowed:return self.send(404,{'error':'찾을 수 없습니다.'})
@@ -417,12 +469,16 @@ class Handler(BaseHTTPRequestHandler):
                 if use_ai:
                     # Not let in: answered before the search and the day's count, which it never touches.
                     if not self.can_read_pages():return self.send(200,{'question':query,'route':'reason','route_reason':why,'sources':[],'answer':None,'ai_used':False,'notice':ASK_CLOSED,'ask_closed':True,'concepts':[],'terms':[],'quota':None})
+                    # A question already being written (a second tap, a retry) joins that job:
+                    # no search, no count, even on the day's last one.
+                    job_id,job=running_job(query,category,body.get('job'))
+                    if job:return self.join_job(job_id,job,started)
                     # The page shows only a 해설 now, so when none can be written there is nothing to
                     # search for: the visitor reads why at once instead of after a search.
                     state=self.quota_state() if API_KEY else None
                     closed=NO_KEY if not API_KEY else PAUSED if state.get('unavailable') else spent_notice() if state.get('remaining')==0 else None
                     if closed:return self.send(200,{'question':query,'route':'reason','route_reason':why,'sources':[],'answer':None,'ai_used':False,'notice':closed,'concepts':[],'terms':[],'quota':state})
-                    if AI_LOCK.locked():return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
+                    if AI_LOCK.locked():log_event('ai_busy');return self.send(429,{'error':BUSY})
                 sources,terms,concepts=question_context(query,category,bid)
                 result={'question':query,'route':'reason' if use_ai else 'search','route_reason':why,'sources':sources,'answer':None,'ai_used':False,'notice':'','concepts':concepts,'terms':terms,'quota':None}
                 # A 해설 does not stop at an empty search. '두 사람이 손을 잡고 걷는다.'는 종속적으로
@@ -431,12 +487,20 @@ class Handler(BaseHTTPRequestHandler):
                 # gives the count back when the evidence step finds nothing either.
                 if not sources and not use_ai:result['notice']=NOT_FOUND
                 elif use_ai:
-                    if not AI_LOCK.acquire(blocking=False):return self.send(429,{'error':'다른 해설을 생성 중입니다. 잠시 후 시도해 주세요.'})
+                    # Two asks of one question sent together both pass the check above and search side
+                    # by side. The one that misses the lock joins the other's job once it is registered,
+                    # a count away (Firestore), instead of meeting 429.
+                    waiting=time.monotonic()+5
+                    while not AI_LOCK.acquire(blocking=False):
+                        job_id,job=running_job(query,category,body.get('job'))
+                        if job:return self.join_job(job_id,job,started)
+                        if time.monotonic()>waiting:log_event('ai_busy');return self.send(429,{'error':BUSY})
+                        time.sleep(.2)
                     job_id=None
                     try:
                         allowed,state=self.quota_state(consume=True);result['quota']=state
                         if not allowed:result['notice']=PAUSED if state.get('unavailable') else spent_notice()
-                        else:job_id=start_job(result,query,category,state,self.is_admin(),body.get('job'))
+                        else:job_id=start_job(result,query,category,state,self.is_admin(),body.get('job'),round(time.monotonic()-started,1))
                     finally:
                         if job_id is None:AI_LOCK.release()  # otherwise the job's thread releases it
                     if job_id:return self.send(200,self.view(wait_job(job_id,AI_JOBS[job_id],started+AI_WAIT)))
