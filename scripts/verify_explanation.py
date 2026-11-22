@@ -14,7 +14,7 @@ if not server.API_KEY:raise SystemExit('API key is not configured.')
 start=time.perf_counter()
 sources=core.search_pages(query,args.category)
 print('Initial:',[(r['title'],r['pdf_page']) for r in sources],flush=True)
-sources=collect_evidence(query,args.category,sources,server.openai_call,server.API_KEY)
+sources=collect_evidence(query,args.category,sources,server.claude_call,server.API_KEY)
 print('Expanded:',len(sources),[(r['title'],r['pdf_page']) for r in sources],flush=True)
 answer=server.reason(query,sources)
 for r in sources:

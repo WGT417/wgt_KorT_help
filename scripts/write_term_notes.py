@@ -15,8 +15,6 @@ Rerunning with the same --out skips terms already written.
 import sys,json,re,random,argparse,threading,time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from urllib.request import Request,urlopen
-from urllib.error import HTTPError,URLError
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import server
 from core import connect
@@ -90,21 +88,12 @@ def prompt(label,areas,evidence):
     return f"{head}\n용어: {label}\n영역: {', '.join(areas)}\n\n[근거]\n{body}"
 
 def call(text,key,effort):
-    payload={'model':MODEL,'input':text,'reasoning':{'effort':effort},'max_output_tokens':6000,
-        'text':{'format':{'type':'json_schema','name':'term_note','schema':SCHEMA,'strict':True}},'store':False}
-    for attempt in range(3):
-        request=Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','Authorization':f'Bearer {key}'},method='POST')
-        try:
-            with urlopen(request,timeout=180) as response:result=json.load(response)
-        except HTTPError as error:
-            if error.code in (429,500,502,503) and attempt<2:time.sleep(10*(attempt+1));continue
-            raise RuntimeError(f'HTTP {error.code}') from None
-        except (URLError,TimeoutError):
-            if attempt<2:time.sleep(10);continue
-            raise
-        raw=''.join(p['text'] for item in result.get('output',[]) if item.get('type')=='message' for p in item.get('content',[]) if p.get('type')=='output_text')
-        return (json.loads(raw) if result.get('status')=='completed' else None),result.get('usage',{})
-    raise RuntimeError('retries exhausted')
+    # The SDK client retries 429, 5xx and dropped connections itself.
+    params={'model':MODEL,'max_tokens':6000,'messages':[{'role':'user','content':text}],
+        'output_config':{'effort':effort,'format':{'type':'json_schema','schema':SCHEMA}}}
+    with server.claude_client(key).beta.messages.stream(**params) as stream:message=stream.get_final_message()
+    usage=message.usage.model_dump(mode='json',exclude_none=True)
+    return (server.answer_text(message) if message.stop_reason=='end_turn' else None),usage
 
 def check(note,label,evidence):
     """Keep what the evidence carries: quotes and examples must be its own words."""
@@ -165,7 +154,7 @@ def main():
     ap.add_argument('--labels-from',help='write the same terms as an earlier notes file (a pilot rerun)')
     ap.add_argument('--export',help='also write the notes the site reads (data/term-notes.json)')
     args=ap.parse_args()
-    if not server.API_KEY:sys.exit('OPENAI_API_KEY가 없습니다.')
+    if not server.API_KEY:sys.exit('ANTHROPIC_API_KEY가 없습니다.')
     out=Path(args.out);done=json.loads(out.read_text(encoding='utf-8')) if out.exists() else {}
     every={l:(l,[AREA[b] for b in AREA if a&b],bool(f&DEFINED),f) for l,a,b,f in catalog()}
     if args.labels_from:todo=[every[l] for l in json.loads(Path(args.labels_from).read_text(encoding='utf-8')) if l in every]

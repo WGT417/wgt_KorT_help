@@ -44,14 +44,41 @@ class RetrievalTests(unittest.TestCase):
         good={'label':'valid','text':'valid','examples':[],'citations':[{'source_id':a['source_id'],'quote':quote}]}
         bad={'label':'invalid','text':'invalid','examples':[],'citations':[{'source_id':'S99999999','quote':quote}]}
         model={'sections':[{'title':'비교','points':[good,bad],'subsections':[]}],'summary':{'columns':['개념','설명'],'rows':[]}}
-        with patch.object(server,'openai_call',return_value=model):result=server.reason('compare',sources)
+        with patch.object(server,'claude_call',return_value=model):result=server.reason('compare',sources)
         self.assertEqual(len(result['sections'][0]['points']),1)
         self.assertEqual(result['rejected_count'],1)
     def test_bad_model_shape(self):
-        with patch.object(server,'openai_call',return_value=[]):
+        with patch.object(server,'claude_call',return_value=[]):
             with self.assertRaises(ValueError):server.reason('test',[])
 
-class OpenAITransportTests(unittest.TestCase):
+def sse(text,stop='end_turn',model='claude-haiku-5-5'):
+    """A Messages API event stream carrying one text block."""
+    events=[('message_start',{'type':'message_start','message':{'id':'msg_test','type':'message','role':'assistant','model':model,'content':[],'stop_reason':None,'stop_sequence':None,'usage':{'input_tokens':10,'output_tokens':1}}}),
+            ('content_block_start',{'type':'content_block_start','index':0,'content_block':{'type':'text','text':''}}),
+            ('content_block_delta',{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':text}}),
+            ('content_block_stop',{'type':'content_block_stop','index':0}),
+            ('message_delta',{'type':'message_delta','delta':{'stop_reason':stop,'stop_sequence':None},'usage':{'output_tokens':5}}),
+            ('message_stop',{'type':'message_stop'})]
+    return ''.join(f'event: {name}\ndata: {json.dumps(data)}\n\n' for name,data in events).encode()
+
+class FakeAnthropic:
+    """The real SDK client over a fake transport: what it sends is recorded, what
+    `reply` returns comes back as the API's answer. No retries unless asked, so errors are quick."""
+    def __init__(self,reply,retries=0):self.reply=reply;self.retries=retries;self.requests=[]
+    def __enter__(self):
+        import httpx2
+        def handle(request):
+            self.requests.append(request)
+            return self.reply(request) if callable(self.reply) else httpx2.Response(200,headers={'content-type':'text/event-stream'},content=self.reply)
+        real=server.anthropic.Anthropic
+        make=lambda **kw:real(**{**kw,'max_retries':self.retries},http_client=server.anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handle)))
+        server.CLIENTS.clear()
+        self.patch=patch.object(server.anthropic,'Anthropic',side_effect=make);self.patch.start()
+        return self
+    def __exit__(self,*exc):self.patch.stop();server.CLIENTS.clear()
+    def body(self,index=-1):return json.loads(self.requests[index].content)
+
+class ClaudeTransportTests(unittest.TestCase):
     def test_saved_key_can_be_replaced_and_deleted(self):
         with tempfile.TemporaryDirectory(dir=core.DATA) as directory,patch.object(server,'ROOT',Path(directory)),patch.object(server,'restrict_secret_file') as restrict:
             path=Path(directory)/'.env'
@@ -59,7 +86,7 @@ class OpenAITransportTests(unittest.TestCase):
             server.save_api_key('test-first')
             server.save_api_key('test-second')
             self.assertEqual(restrict.call_count,2)
-            self.assertEqual(path.read_text(encoding='utf-8'),'OTHER=value\nOPENAI_API_KEY=test-second\n')
+            self.assertEqual(path.read_text(encoding='utf-8'),'OTHER=value\nANTHROPIC_API_KEY=test-second\n')
             server.save_api_key('')
             self.assertEqual(restrict.call_count,3)
             self.assertEqual(path.read_text(encoding='utf-8'),'OTHER=value\n')
@@ -70,35 +97,62 @@ class OpenAITransportTests(unittest.TestCase):
         for path in (server.ROOT/'dist').iterdir():
             if path.is_file():self.assertNotIn(secret,path.read_bytes().decode('utf-8',errors='ignore'))
     def test_fixed_model_auth_and_response_parsing(self):
-        response={'status':'completed','output':[{'type':'reasoning'},{'type':'message','content':[{'type':'output_text','text':'{"claims":[]}'}]}]}
-        with patch.object(server,'urlopen',return_value=io.BytesIO(json.dumps(response).encode())) as call:
-            self.assertEqual(server.openai_call('Return JSON','test-secret'),{'claims':[]})
-        request=call.call_args.args[0];payload=json.loads(request.data)
-        self.assertEqual(request.full_url,'https://api.openai.com/v1/responses')
-        self.assertEqual(request.get_header('Authorization'),'Bearer test-secret')
-        self.assertEqual(payload['model'],'gpt-5.6-luna')
-        self.assertFalse(payload['store'])
-        self.assertNotIn('test-secret',request.full_url)
-        self.assertNotIn('test-secret',request.data.decode())
+        schema={'type':'object','properties':{'claims':{'type':'array','items':{'type':'string'}}},'required':['claims'],'additionalProperties':False}
+        with FakeAnthropic(sse('{"claims":[]}')) as fake:
+            self.assertEqual(server.claude_call('Return JSON','test-secret',schema=schema,effort='low'),{'claims':[]})
+        request=fake.requests[0];payload=fake.body()
+        self.assertTrue(str(request.url).endswith('/v1/messages'))
+        self.assertEqual(request.headers['authorization'],'Bearer test-secret')
+        self.assertEqual(payload['model'],'claude-haiku-5-5')
+        self.assertTrue(payload['stream'])
+        self.assertEqual(payload['output_config'],{'effort':'low','format':{'type':'json_schema','schema':schema}})
+        # Haiku has no server-side fallback: the parameter would leave a decline declined.
+        self.assertNotIn('fallbacks',payload)
+        self.assertNotIn('test-secret',str(request.url))
+        self.assertNotIn('test-secret',request.content.decode())
+    def test_answer_model_asks_for_fallbacks(self):
+        with FakeAnthropic(sse('{}',model=server.ANSWER_MODEL)) as fake:
+            server.claude_call('JSON','test-secret',model=server.ANSWER_MODEL,effort='high')
+        self.assertEqual(fake.body()['model'],'claude-opus-5-5')
+        self.assertEqual(fake.body()['fallbacks'],'default')
+        self.assertIn(server.FALLBACK_BETA,fake.requests[0].headers['anthropic-beta'])
+    def test_text_after_a_fallback_block_is_the_answer(self):
+        from types import SimpleNamespace as N
+        text=lambda t:N(type='text',text=t)
+        fallback=N(type='fallback')
+        self.assertEqual(server.answer_text(N(content=[N(type='thinking',thinking=''),text('{"a":1}')])),{'a':1})
+        # The declined model's partial text stays in front; the fallback model wrote anew.
+        self.assertEqual(server.answer_text(N(content=[text('{"a":'),fallback,text('{"a":2}')])),{'a':2})
+        # Or it carried the partial on.
+        self.assertEqual(server.answer_text(N(content=[text('{"a":'),fallback,text('3}')])),{'a':3})
     def test_incomplete_refusal_and_malformed_responses(self):
-        responses=[{'status':'incomplete','output':[]},{'status':'completed','output':[{'type':'message','content':[{'type':'refusal','refusal':'No'}]}]},None]
-        for response in responses:
-            with self.subTest(response=response),patch.object(server,'urlopen',return_value=io.BytesIO(json.dumps(response).encode())):
-                with self.assertRaises(ValueError):server.openai_call('JSON','test-secret')
+        for reply in [sse('{"a":',stop='max_tokens'),sse('',stop='refusal'),sse('not json')]:
+            with self.subTest(reply=reply[-80:]),FakeAnthropic(reply):
+                with self.assertRaises(ValueError):server.claude_call('JSON','test-secret')
     def test_dropped_connection_is_asked_once_more(self):
-        from http.client import RemoteDisconnected
-        response={'status':'completed','output':[{'type':'message','content':[{'type':'output_text','text':'{"ok":true}'}]}]}
-        with patch.object(server,'urlopen',side_effect=[RemoteDisconnected('closed'),io.BytesIO(json.dumps(response).encode())]) as call:
-            self.assertEqual(server.openai_call('JSON','test-secret'),{'ok':True})
-        self.assertEqual(call.call_count,2)
-        with patch.object(server,'urlopen',side_effect=RemoteDisconnected('closed')) as call:
-            with self.assertRaises(ValueError) as error:server.openai_call('JSON','test-secret')
-        self.assertEqual(call.call_count,2);self.assertIn('끊겼습니다',str(error.exception))
+        # OpenAI once closed a 해설 without an answer (2026-11-04); the SDK client retries it.
+        import httpx2
+        replies=[]
+        def reply(request):
+            replies.append(request)
+            if len(replies)==1:raise httpx2.RemoteProtocolError('Server disconnected without sending a response.',request=request)
+            return httpx2.Response(200,headers={'content-type':'text/event-stream'},content=sse('{"ok":true}'))
+        with FakeAnthropic(reply,retries=2):
+            self.assertEqual(server.claude_call('JSON','test-secret'),{'ok':True})
+        self.assertEqual(len(replies),2)
+        self.assertEqual(server.claude_client('test-secret').max_retries,2)
+        server.CLIENTS.clear()
     def test_api_errors_do_not_expose_secrets(self):
-        for code in [401,403,404,429,500]:
-            with self.subTest(code=code),patch.object(server,'urlopen',side_effect=HTTPError('https://api.openai.com/v1/responses',code,'test-secret',{},None)):
-                with self.assertRaises(ValueError) as error:server.openai_call('JSON','test-secret')
+        import httpx2
+        for code in [400,401,402,403,404,429,500,529]:
+            reply=lambda request,code=code:httpx2.Response(code,json={'type':'error','error':{'type':'api_error','message':'test-secret rejected'}})
+            with self.subTest(code=code),FakeAnthropic(reply):
+                with self.assertRaises(ValueError) as error:server.claude_call('JSON','test-secret')
                 self.assertNotIn('test-secret',str(error.exception))
+        def unreachable(request):raise httpx2.ConnectError('test-secret unreachable',request=request)
+        with FakeAnthropic(unreachable):
+            with self.assertRaises(ValueError) as error:server.claude_call('JSON','test-secret')
+            self.assertIn('연결',str(error.exception));self.assertNotIn('test-secret',str(error.exception))
 
 class HTTPTests(unittest.TestCase):
     @classmethod
@@ -115,8 +169,8 @@ class HTTPTests(unittest.TestCase):
         # A reason request runs one search per planned subtopic (about 15s here). A
         # client timeout leaves the server thread running into the next test's mocks.
         return urlopen(Request(self.base+path,data=json.dumps(body).encode() if body is not None else None,headers=h),timeout=60)
-    def test_search_does_not_call_openai_even_with_key(self):
-        with patch.object(server,'API_KEY','not-a-real-secret-for-testing'),patch.object(server,'openai_call') as call:
+    def test_search_does_not_call_claude_even_with_key(self):
+        with patch.object(server,'API_KEY','not-a-real-secret-for-testing'),patch.object(server,'claude_call') as call:
             with self.request('/api/ask',{'question':'피동과 사동의 차이','category':'문법','mode':'search'}) as r:data=json.load(r)
             call.assert_not_called();self.assertFalse(data['ai_used']);self.assertGreater(len(data['sources']),0)
     def test_no_key_graceful_fallback(self):
@@ -128,7 +182,7 @@ class HTTPTests(unittest.TestCase):
         citation={'source_id':source['source_id'],'quote':source['text'][20:100]}
         point={'label':'유형','text':'근거에 따른 설명','examples':[],'citations':[citation]}
         answer={'title':'어미의 분류','sections':[{'title':'분류','points':[point]*7,'subsections':[]}],'summary':{'columns':['유형','기능'],'rows':[{'cells':['어미','기능'],'citations':[citation]}]},'insufficient':False,'limitations':''}
-        with patch.object(server,'API_KEY','mock-key'),patch.object(server,'openai_call',side_effect=[{'queries':['선어말어미','종결어미','연결어미','전성어미']},answer]) as call:
+        with patch.object(server,'API_KEY','mock-key'),patch.object(server,'claude_call',side_effect=[{'queries':['선어말어미','종결어미','연결어미','전성어미']},answer]) as call:
             with self.request('/api/ask',{'question':'어미의 종류에 대해 설명해줘','category':'문법','mode':'reason'}) as r:data=json.load(r)
         self.assertEqual(call.call_count,2);self.assertTrue(data['ai_used'])
         self.assertEqual(len(data['answer']['sections'][0]['points']),7)
@@ -139,7 +193,7 @@ class HTTPTests(unittest.TestCase):
         secret='not-a-real-secret-for-testing'
         with patch.object(server,'API_KEY',secret):
             with self.request('/api/status') as r:
-                body=r.read().decode();self.assertNotIn(secret,body);self.assertNotIn('OPENAI_API_KEY',body)
+                body=r.read().decode();self.assertNotIn(secret,body);self.assertNotIn('ANTHROPIC_API_KEY',body)
                 self.assertEqual(len(json.loads(body)['books']),26)
         for path in ['/.env','/server.py','/data/library.sqlite3','/api/books/0000000000000000/pdf']:
             with self.assertRaises(HTTPError) as e:self.request(path)
@@ -519,7 +573,7 @@ class PublicModeTests(unittest.TestCase):
         self.assertTrue(data['ai_used']);self.assertEqual(data['quota'],{'admin':True})
         self.assertTrue(self.ask(**{'X-Admin-Token':'wrong'})['ask_closed'])
     def test_failed_generation_refunds_the_attempt(self):
-        with patch.object(server,'reason',side_effect=ValueError('OpenAI 실패')):data=self.ask()
+        with patch.object(server,'reason',side_effect=ValueError('앤트로픽 API 실패')):data=self.ask()
         self.assertFalse(data['ai_used']);self.assertEqual(data['quota']['remaining'],3);self.assertIn('실패',data['notice'])
     def test_slow_generation_hands_back_a_job_and_finishes_on_poll(self):
         # Firebase Hosting drops a request at 60s, so past AI_WAIT the page gets a job id and asks again.
@@ -592,10 +646,10 @@ class PublicModeTests(unittest.TestCase):
         # Every 해설 leaves one line, the ones that end in a notice too, with the time of each step.
         with patch.object(server,'log_event') as log:
             self.ask()
-            with patch.object(server,'reason',side_effect=ValueError('OpenAI 실패')):self.ask()
+            with patch.object(server,'reason',side_effect=ValueError('앤트로픽 API 실패')):self.ask()
             with self.assertRaises(HTTPError):self.request('/api/ask/'+'y'*20)
         jobs=[c.kwargs for c in log.call_args_list if c.args==('ai_job',)]
-        self.assertEqual([j['outcome'] for j in jobs],['ok','notice']);self.assertEqual(jobs[1]['notice'],'OpenAI 실패')
+        self.assertEqual([j['outcome'] for j in jobs],['ok','notice']);self.assertEqual(jobs[1]['notice'],'앤트로픽 API 실패')
         for key in ['evidence_s','answer_s','total_s','context_s','pages']:self.assertIn(key,jobs[0])
         self.assertIn(('ai_lost',),[c.args for c in log.call_args_list])
     def test_empty_search_still_looks_for_evidence_and_refunds_when_none_is_found(self):

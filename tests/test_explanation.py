@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 import core,server
-from explanation import validate,collect_evidence,MAX_PAGES,resolve_evidence,mark_damage,scrub
+from explanation import validate,collect_evidence,MAX_PAGES,resolve_evidence,mark_damage,scrub,PLAN_SCHEMA
 
 class ExplanationTests(unittest.TestCase):
     def setUp(self):
@@ -34,12 +34,15 @@ class ExplanationTests(unittest.TestCase):
         text=''.join(core.normalized(r['text']) for r in rows)
         for term in ['선어말어미','종결어미','연결어미','전성어미']:self.assertIn(term,text)
     def test_structured_schema_is_sent_to_api(self):
-        import io,json
-        from unittest.mock import patch
-        with patch.object(server,'urlopen',return_value=io.BytesIO(json.dumps({'status':'completed','output':[{'type':'message','content':[{'type':'output_text','text':'{}'}]}]}).encode())) as call:
-            server.openai_call('JSON','test',schema={'type':'object'})
-        payload=json.loads(call.call_args.args[0].data)
-        self.assertEqual(payload['text']['format']['type'],'json_schema');self.assertTrue(payload['text']['format']['strict'])
+        from types import SimpleNamespace as N
+        from unittest.mock import patch,MagicMock
+        client=MagicMock()
+        stream=client.beta.messages.stream.return_value.__enter__.return_value
+        stream.get_final_message.return_value=N(model='claude-haiku-5-5',stop_reason='end_turn',usage=N(input_tokens=1,output_tokens=1),content=[N(type='text',text='{}')])
+        with patch.object(server,'claude_client',return_value=client):
+            self.assertEqual(server.claude_call('JSON','test',schema=PLAN_SCHEMA),{})
+        params=client.beta.messages.stream.call_args.kwargs
+        self.assertEqual(params['output_config']['format'],{'type':'json_schema','schema':PLAN_SCHEMA})
 
 class EvidenceResolutionTests(unittest.TestCase):
     """The model names evidence ids; the server turns them into citations."""

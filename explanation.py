@@ -296,7 +296,8 @@ sound_changes는 질문의 예문 표기와 발음을 자모 단위로 맞대어
 related는 질문이 국어(문법·문학·화법·작문·독서·매체)나 국어 교육에 관한 것이면 true, 아니면(예: 점심 메뉴, 날씨, 다른 교과의 문제) false입니다. false이면 queries는 빈 배열로 둡니다.
 출력은 {"related":true,"queries":["검색어"]}입니다.
 '''+json.dumps({'question':query,'sound_changes':changes,'concepts':concept_outline(concepts),'overview':[{'book':r['title'],'text':r.get('evidence_text',r['text'])[:3000]} for r in seed]},ensure_ascii=False)
-    plan=call(prompt,key,schema=PLAN_SCHEMA,max_tokens=4000,effort='low')
+    # Thinking counts toward max_tokens, so the plan's limit leaves it room.
+    plan=call(prompt,key,schema=PLAN_SCHEMA,max_tokens=8000,effort='low')
     # Stopped before the 해설 model only when nothing of the library's own points to
     # the question either: no concept entry, no index term, no sound change.
     if isinstance(plan,dict) and plan.get('related') is False and not concepts and not terms and not names:raise ValueError(OFF_TOPIC)

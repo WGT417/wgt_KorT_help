@@ -110,5 +110,5 @@ def search_pages(query,category='전체',book_id='',limit=8):
 def route_question(mode):
     """The visitor chooses outright; nothing here guesses at the question."""
     if mode=='reason':return True,'AI 활용 해설입니다. 찾은 원문을 근거로 설명합니다.'
-    return False,'원문 검색입니다. OpenAI API를 호출하지 않습니다.'
+    return False,'원문 검색입니다. AI API를 호출하지 않습니다.'
 

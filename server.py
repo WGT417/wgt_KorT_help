@@ -1,12 +1,10 @@
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlsplit, parse_qs
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
-from http.client import HTTPException
 import os, json, re, threading, secrets, mimetypes, time, subprocess, gzip
 from core import ROOT, DATA, connect, init_db, search_pages, route_question, pymupdf, normalized, quality, ocr_page
 from explanation import collect_evidence, prompt_for, validate, ANSWER_SCHEMA,MODEL_ANSWER_SCHEMA,evidence_packet,resolve_evidence,add_cited_pages
 import quota, access
+import anthropic  # after core, which puts .runtime on sys.path
 
 # PUBLIC=1 is set in the Dockerfile: bind all interfaces, trust the platform's
 # routing instead of the localhost Host check, count AI usage in Firestore,
@@ -23,15 +21,15 @@ if not PUBLIC:
     for line in (ROOT/'.env').read_text(encoding='utf-8').splitlines() if (ROOT/'.env').exists() else []:
         if '=' in line and not line.lstrip().startswith('#'):
             name,value=line.split('=',1)
-            if name.strip() == 'OPENAI_API_KEY':os.environ.setdefault(name.strip(),value.strip().strip('"').strip("'"))
-API_KEY=os.environ.get('OPENAI_API_KEY','')
-# The search plan is a list of keywords: the nano tier does it. The 해설 is where the
-# model shows. On the same evidence (2026-10-11) luna, the nano tier, wrote 하향 이중
-# 모음 /əy/ as "/y/ 뒤에 /ə/", dropped the books' proofs and listed classes without
-# their members; sol, the flagship, did none of that. About $0.02 against $0.25 an answer.
-MODEL='gpt-5.6-luna'
-ANSWER_MODEL=os.environ.get('ANSWER_MODEL','gpt-5.6-sol')
-ANSWER_EFFORT=os.environ.get('ANSWER_EFFORT','high')
+            if name.strip() == 'ANTHROPIC_API_KEY':os.environ.setdefault(name.strip(),value.strip().strip('"').strip("'"))
+API_KEY=os.environ.get('ANTHROPIC_API_KEY','')
+# The search plan is a list of keywords: the small tier does it. The 해설 is where the
+# model shows: with GPT (2026-10-11) the nano tier wrote 하향 이중 모음 /əy/ as "/y/ 뒤에
+# /ə/", dropped the books' proofs and listed classes without their members, and the
+# flagship did none of that. Moved to Claude on 2026-11-22 with the same split.
+MODEL='claude-haiku-5-5'
+ANSWER_MODEL=os.environ.get('ANSWER_MODEL','claude-opus-5-5')
+ANSWER_EFFORT=os.environ.get('ANSWER_EFFORT','medium')
 CSRF=secrets.token_urlsafe(32)
 AI_LOCK=threading.Lock()
 OCR_LOCK=threading.Lock()
@@ -50,8 +48,8 @@ except Exception as error:
 def save_api_key(key):
     path=ROOT/'.env'
     lines=path.read_text(encoding='utf-8').splitlines() if path.exists() else []
-    lines=[line for line in lines if line.split('=',1)[0].strip()!='OPENAI_API_KEY']
-    if key:lines.append('OPENAI_API_KEY='+key)
+    lines=[line for line in lines if line.split('=',1)[0].strip()!='ANTHROPIC_API_KEY']
+    if key:lines.append('ANTHROPIC_API_KEY='+key)
     temporary=ROOT/'.env.tmp'
     try:
         temporary.write_text('\n'.join(lines)+'\n',encoding='utf-8')
@@ -74,41 +72,71 @@ def log_event(event,**fields):
     jsonPayload.event="ai_job" lists every 해설 with how long each step took."""
     print(json.dumps({'event':event,**{k:v for k,v in fields.items() if v is not None}},ensure_ascii=False),flush=True)
 
-# The OpenAI calls of the 해설 being written on this thread (generate sets a list):
+# The model calls of the 해설 being written on this thread (generate sets a list):
 # seconds and tokens per call, so the log shows the plan and the answer apart.
 CALLS=threading.local()
 
-def openai_call(prompt,key,*,schema=None,max_tokens=16000,effort='medium',model=None):
-    format={'type':'json_schema','name':'library_response','schema':schema,'strict':True} if schema else {'type':'json_object'}
-    payload={'model':model or MODEL,'input':prompt,'reasoning':{'effort':effort},'max_output_tokens':max_tokens,'text':{'format':format},'store':False}
-    request=Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','Authorization':f'Bearer {key}'},method='POST')
-    began=time.monotonic()
-    # OpenAI sometimes closes a long request without a response (RemoteDisconnected,
-    # 2026-11-04, a 해설 after about a minute): asked once more before giving up.
-    for attempt in (1,2):
-        try:
-            with urlopen(request,timeout=300) as response: result=json.load(response)
-            break
-        except HTTPError as error:
-            code=error.code
-            raise ValueError({400:'모델 또는 요청 설정을 확인해 주세요.',401:'OpenAI API 키 인증에 실패했습니다.',403:'OpenAI API 키의 사용 권한을 확인해 주세요.',404:f'{model or MODEL} 모델 접근 권한을 확인해 주세요.',429:'OpenAI API 잔액 또는 요청 한도를 확인해 주세요.'}.get(code,'OpenAI API가 응답하지 못했습니다. 잠시 후 다시 시도해 주세요.')) from None
-        except (URLError,TimeoutError):raise ValueError('OpenAI 연결 시간이 초과되었거나 네트워크에 연결할 수 없습니다.') from None
-        except (ConnectionError,HTTPException):
-            if attempt==2:raise ValueError('OpenAI 연결이 응답 없이 끊겼습니다. 잠시 후 다시 시도해 주세요.') from None
-        except ValueError:raise ValueError('OpenAI 응답을 읽을 수 없습니다. 잠시 후 다시 시도해 주세요.') from None
-    calls=getattr(CALLS,'log',None)
-    if calls is not None and isinstance(result,dict):
-        usage=result.get('usage') or {}
-        calls.append({'model':payload['model'],'s':round(time.monotonic()-began,1),'status':result.get('status'),'in':usage.get('input_tokens'),'out':usage.get('output_tokens'),'reasoning':(usage.get('output_tokens_details') or {}).get('reasoning_tokens')})
+CLIENTS={}
+def claude_client(key):
+    # One client per key keeps its connection pool; the key changes only through /api/key.
+    # Its retries also cover a connection the API drops before answering, which OpenAI
+    # did to a 해설 after about a minute (RemoteDisconnected, 2026-11-04).
+    if key not in CLIENTS:CLIENTS.clear();CLIENTS[key]=anthropic.Anthropic(api_key=key,timeout=anthropic.Timeout(300,connect=10),max_retries=2)
+    return CLIENTS[key]
+
+# A safety classifier can decline a benign request; with fallbacks the API reruns it on
+# the model Anthropic recommends for that category inside the same call. Haiku has no
+# server-side fallback, so its requests go without.
+FALLBACK_BETA='server-side-fallback-2026-07-01'
+def api_error(error,model):
+    if isinstance(error,anthropic.APIConnectionError):return '앤트로픽 API 연결 시간이 초과되었거나 네트워크에 연결할 수 없습니다.'
+    print(f'Anthropic API {getattr(error,"status_code","?")} {type(error).__name__} request_id={getattr(error,"request_id",None)}',flush=True)
+    if isinstance(error,anthropic.AuthenticationError):return '앤트로픽 API 키 인증에 실패했습니다.'
+    if isinstance(error,anthropic.PermissionDeniedError):return '앤트로픽 API 키의 사용 권한을 확인해 주세요.'
+    if isinstance(error,anthropic.NotFoundError):return f'{model} 모델 접근 권한을 확인해 주세요.'
+    if isinstance(error,(anthropic.PaymentRequiredError,anthropic.EnforcedSpendLimitReachedError,anthropic.ContractSpendLimitReachedError)):return '앤트로픽 API 크레딧 잔액이나 사용 한도를 확인해 주세요.'
+    if isinstance(error,anthropic.RateLimitError):return '앤트로픽 API 요청 한도에 걸렸습니다. 잠시 후 다시 시도해 주세요.'
+    if isinstance(error,anthropic.BadRequestError):
+        # A spent balance comes back as a 400 that says so.
+        if 'credit' in str(getattr(error,'message','')).lower():return '앤트로픽 API 크레딧 잔액을 확인해 주세요.'
+        return '모델 또는 요청 설정을 확인해 주세요.'
+    return '앤트로픽 API가 응답하지 못했습니다. 잠시 후 다시 시도해 주세요.'
+
+def answer_text(message):
+    """The JSON the model wrote. After a mid-stream fallback the declined model's
+    partial text stays in front of a fallback block: read what follows the last
+    one, and the whole run only if the fallback model continued the partial."""
+    blocks=list(message.content)
+    last=max((i for i,b in enumerate(blocks) if b.type=='fallback'),default=-1)
+    tail=''.join(b.text for b in blocks[last+1:] if b.type=='text')
+    whole=''.join(b.text for b in blocks if b.type=='text')
+    for raw in dict.fromkeys((tail,whole)):
+        try:return json.loads(raw)
+        except ValueError:pass
+    raise ValueError('해설 응답 형식이 올바르지 않습니다. 잠시 후 다시 시도해 주세요.')
+
+def claude_call(prompt,key,*,schema=None,max_tokens=16000,effort='medium',model=None):
+    model=model or MODEL
+    params={'model':model,'max_tokens':max_tokens,'messages':[{'role':'user','content':prompt}],'output_config':{'effort':effort}}
+    if schema:params['output_config']['format']={'type':'json_schema','schema':schema}
+    if not model.startswith('claude-haiku'):params.update(betas=[FALLBACK_BETA],fallbacks='default')
+    started=time.monotonic()
     try:
-        if result.get('status')!='completed':raise ValueError('incomplete response')
-        raw=''.join(part['text'] for item in result['output'] if item.get('type')=='message' for part in item.get('content',[]) if part.get('type')=='output_text')
-        return json.loads(raw)
-    except (KeyError,IndexError,ValueError,TypeError,AttributeError):raise ValueError('OpenAI 해설을 완성하지 못했거나 응답 형식이 올바르지 않습니다. 잠시 후 다시 시도해 주세요.') from None
+        # Streamed: thinking counts toward max_tokens, and the SDK refuses long non-streamed calls.
+        with claude_client(key).beta.messages.stream(**params) as stream:message=stream.get_final_message()
+    except anthropic.APIError as error:raise ValueError(api_error(error,model)) from None
+    usage=message.usage;seconds=round(time.monotonic()-started,1)
+    calls=getattr(CALLS,'log',None)
+    # Inside a 해설 job the call goes into its ai_job log line; a script gets a line of its own.
+    if calls is not None:calls.append({'model':message.model,'effort':effort,'s':seconds,'status':message.stop_reason,'in':usage.input_tokens,'out':usage.output_tokens})
+    else:print(f'claude {message.model} effort={effort} in={usage.input_tokens} out={usage.output_tokens} stop={message.stop_reason} {seconds:.0f}s',flush=True)
+    if message.stop_reason=='refusal':raise ValueError('모델이 이 질문에 대한 답을 거절했습니다. 질문을 바꿔 다시 시도해 주세요.')
+    if message.stop_reason=='max_tokens':raise ValueError('해설이 길어져 끝까지 쓰지 못했습니다. 질문을 좁혀 다시 시도해 주세요.')
+    return answer_text(message)
 
 def reason(query,sources,concepts=()):
     packet,registry=evidence_packet(sources,concepts)
-    answer=resolve_evidence(openai_call(prompt_for(query,sources,packet),API_KEY,schema=MODEL_ANSWER_SCHEMA,max_tokens=40000,effort=ANSWER_EFFORT,model=ANSWER_MODEL),registry)
+    answer=resolve_evidence(claude_call(prompt_for(query,sources,packet),API_KEY,schema=MODEL_ANSWER_SCHEMA,max_tokens=64000,effort=ANSWER_EFFORT,model=ANSWER_MODEL),registry)
     add_cited_pages(answer,sources)
     return validate(answer,sources)
 
@@ -133,7 +161,7 @@ PAUSED='지금은 해설 사용량을 기록할 수 없어 AI 해설을 잠시 �
 # The 해설 condenses the books' pages, book by book, so on the public site it follows the same
 # rule as their quotes: only the admins and the accounts they let in (2026-09-29).
 ASK_CLOSED='AI 해설은 개론서의 내용을 추려 쓰는 것이어서, 저작권을 지키기 위해 관리자가 열람을 허락해 드린 분께만 열어 두었습니다. 너그러이 양해해 주시면 감사하겠습니다. 용어의 뜻은 로그인하지 않아도 용어 카드에서 바로 보실 수 있습니다.'
-NO_KEY='AI 해설을 쓰려면 OpenAI API 키를 연결해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다.'
+NO_KEY='AI 해설을 쓰려면 앤트로픽 API 키를 연결해 주세요. 용어의 뜻은 용어 카드에서 바로 볼 수 있습니다.'
 
 NOT_FOUND='관련 근거를 찾지 못했습니다. 용어를 짧게 바꾸거나 검색 영역을 넓혀 주세요.'
 # Only another question meets this now: the same question joins the job (running_job).
@@ -177,7 +205,7 @@ def generate(job,query,category,state,admin):
         # the old letters and jamo intact: the 해설 reads them first.
         concepts=result.get('concepts') or []
         began=time.monotonic()
-        sources=collect_evidence(query,category,result['sources'],openai_call,API_KEY,concepts,result.get('terms') or [])
+        sources=collect_evidence(query,category,result['sources'],claude_call,API_KEY,concepts,result.get('terms') or [])
         times['evidence_s']=round(time.monotonic()-began,1)
         if not sources:raise ValueError(NOT_FOUND)
         result['sources']=sources

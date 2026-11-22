@@ -3,7 +3,7 @@
     python scripts/cloud.py setup                 # once per project: APIs, bucket, image repository
     python scripts/cloud.py push-data             # upload data/ (this computer -> bucket)
     python scripts/cloud.py pull-data             # download data/ (bucket -> this computer)
-    python scripts/cloud.py deploy [--openai-key K] [--admin-token T] [--admin-email E] [--no-hosting]
+    python scripts/cloud.py deploy [--anthropic-key K] [--admin-token T] [--admin-email E] [--no-hosting]
                                                   # build in Cloud Build (data fetched from the bucket) and deploy to Cloud Run,
                                                   # then `hosting` so the term cards match what was deployed
     python scripts/cloud.py hosting               # write the term cards (build_term_cards.py) and deploy dist/ to Firebase Hosting
@@ -11,8 +11,9 @@
 
 Settings live in deploy.json (project, region, service, bucket). Requires the
 gcloud CLI, logged in with `gcloud init`. Secrets are never written to disk here:
-pass --openai-key / --admin-token only on the first deploy (or to rotate them);
-later deploys keep the environment variables of the previous revision.
+pass --anthropic-key / --admin-token only on the first deploy (or to rotate them);
+later deploys keep the environment variables of the previous revision. Passing
+--anthropic-key also drops the OPENAI_API_KEY the service kept from before 2026-11-22.
 --admin-email is the Google account (comma-separated for several) that signs in
 as admin and manages who may read whole pages. It stays out of this public
 repository for the same reason: it lives only on the Cloud Run service.
@@ -99,7 +100,7 @@ def sync(config, direction):
     print(f"\n{'올렸습니다' if direction == 'push' else '받았습니다'}: {source} -> {target}")
 
 
-def deploy(config, openai_key, admin_token, admin_email=''):
+def deploy(config, anthropic_key, admin_token, admin_email=''):
     image = image_name(config)
     project = ['--project', config['project']]
     run('builds', 'submit', '--config', 'cloudbuild.yaml', '--region', config['region'],
@@ -108,10 +109,12 @@ def deploy(config, openai_key, admin_token, admin_email=''):
             '--allow-unauthenticated', '--memory', config['memory'], '--cpu', str(config['cpu']),
             '--max-instances', str(config['max_instances']), '--min-instances', str(config['min_instances']),
             '--timeout', str(config['timeout']), '--concurrency', '8', *project]
-    env = {k: v for k, v in (('OPENAI_API_KEY', openai_key), ('ADMIN_TOKEN', admin_token), ('ADMIN_EMAILS', admin_email)) if v}
+    env = {k: v for k, v in (('ANTHROPIC_API_KEY', anthropic_key), ('ADMIN_TOKEN', admin_token), ('ADMIN_EMAILS', admin_email)) if v}
     if env:
         # ^|^ makes | the separator so a key containing a comma cannot break the list.
         args += ['--update-env-vars', '^|^' + '|'.join(f'{k}={v}' for k, v in env.items())]
+    if anthropic_key:
+        args += ['--remove-env-vars', 'OPENAI_API_KEY']
     run(*args)
     print('\n배포 주소:', url(config))
 
@@ -153,7 +156,7 @@ def main():
     for name in ('setup', 'push-data', 'pull-data', 'hosting', 'url'):
         sub.add_parser(name)
     d = sub.add_parser('deploy')
-    d.add_argument('--openai-key', default='')
+    d.add_argument('--anthropic-key', default='')
     d.add_argument('--admin-token', default='')
     d.add_argument('--admin-email', default='', help='관리자로 로그인할 구글 계정(여럿이면 쉼표로). 한 번 넣으면 다음 배포에도 남는다')
     d.add_argument('--no-hosting', action='store_true', help='Cloud Run만 배포하고 용어 카드·화면(Hosting)은 두기')
@@ -163,7 +166,7 @@ def main():
     elif args.command == 'push-data': sync(config, 'push')
     elif args.command == 'pull-data': sync(config, 'pull')
     elif args.command == 'deploy':
-        deploy(config, args.openai_key, args.admin_token, args.admin_email)
+        deploy(config, args.anthropic_key, args.admin_token, args.admin_email)
         if not args.no_hosting: hosting(config)
     elif args.command == 'hosting': hosting(config)
     elif args.command == 'url': print(url(config))
